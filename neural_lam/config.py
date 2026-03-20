@@ -151,7 +151,7 @@ class NeuralLAMConfig(dataclass_wizard.JSONWizard, dataclass_wizard.YAMLWizard):
 
 class InvalidConfigError(Exception):
     pass
-
+ 
 
 def load_config_and_datastore(
     config_path: str,

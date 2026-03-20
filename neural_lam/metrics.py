@@ -9,7 +9,7 @@ def get_metric(metric_name):
     metric_name: str, name of the metric
 
     Returns:
-    metric: function implementing the metric
+    metric: function implementing the metric 
     """
     metric_name_lower = metric_name.lower()
     assert (

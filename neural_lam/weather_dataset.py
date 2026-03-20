@@ -127,7 +127,7 @@ class WeatherDataset(torch.utils.data.Dataset):
                 warnings.warn(
                     "only using first ensemble member, so dataset size is "
                     " effectively reduced by the number of ensemble members "
-                    f"({self.da_state.ensemble_member.size})",
+                    f"({self.da_state.ensemble.size})",
                     UserWarning,
                 )
 
@@ -360,17 +360,17 @@ class WeatherDataset(torch.utils.data.Dataset):
             # splitting `idx` into two parts, one for the analysis time and one
             # for the ensemble member and then increasing self.__len__ to
             # include all ensemble members
-            warnings.warn(
-                "only use of ensemble member 0 (the first member) is "
-                "implemented for ensemble data"
-            )
+            # warnings.warn(
+            #     "only use of ensemble member 0 (the first member) is "
+            #     "implemented for ensemble data"
+            # )
             i_ensemble = 0
-            da_state = self.da_state.isel(ensemble_member=i_ensemble)
+            da_state = self.da_state.isel(ensemble=i_ensemble)
         else:
             da_state = self.da_state
 
         if self.da_forcing is not None:
-            if "ensemble_member" in self.da_forcing.dims:
+            if "ensemble" in self.da_forcing.dims:
                 raise NotImplementedError(
                     "Ensemble member not yet supported for forcing data"
                 )
@@ -588,7 +588,7 @@ class WeatherDataset(torch.utils.data.Dataset):
             coords=coords,
         )
 
-        for grid_coord in ["x", "y"]:
+        for grid_coord in ["x", "y", "z"]:
             if (
                 grid_coord in da_datastore_state.coords
                 and grid_coord not in da.coords
@@ -600,7 +600,7 @@ class WeatherDataset(torch.utils.data.Dataset):
 
         return da
 
-
+ 
 class WeatherDataModule(pl.LightningDataModule):
     """DataModule for weather data."""
 

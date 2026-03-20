@@ -51,7 +51,11 @@ class ARModel(pl.LightningModule):
         da_state_stats = datastore.get_standardization_dataarray(
             category="state"
         )
-        da_boundary_mask = datastore.boundary_mask
+        #da_boundary_mask = datastore.boundary_mask
+        try:
+            da_boundary_mask = datastore.boundary_mask
+        except Exception:
+            da_boundary_mask = None
         num_past_forcing_steps = args.num_past_forcing_steps
         num_future_forcing_steps = args.num_future_forcing_steps
 
@@ -318,7 +322,7 @@ class ARModel(pl.LightningModule):
         )
         return batch_loss
 
-    def all_gather_cat(self, tensor_to_gather):
+    def all_gather_cat(self, tensor_to_gather): 
         """
         Gather tensors across all ranks, and concatenate across dim. 0 (instead
         of stacking in new dim. 0)
@@ -345,7 +349,7 @@ class ARModel(pl.LightningModule):
         )  # (time_steps-1)
         mean_loss = torch.mean(time_step_loss)
 
-        # Log loss per time step forward and mean
+        # Log loss per time step forward and mean 
         val_log_dict = {
             f"val_loss_unroll{step}": time_step_loss[step - 1]
             for step in self.args.val_steps_to_log
@@ -390,6 +394,26 @@ class ARModel(pl.LightningModule):
         prediction, target, pred_std, batch_times = self.common_step(batch)
         # prediction: (B, pred_steps, num_grid_nodes, d_f) pred_std: (B,
         # pred_steps, num_grid_nodes, d_f) or (d_f,)
+
+        if self.trainer.is_global_zero:
+            os.makedirs(os.path.join(self.logger.save_dir, "raw_preds"), exist_ok=True)
+
+            # rescale to physical units for qualitative inspection
+            prediction_rescaled = prediction * self.state_std + self.state_mean
+            target_rescaled = target * self.state_std + self.state_mean
+
+            torch.save(
+                prediction_rescaled.cpu(),
+                os.path.join(self.logger.save_dir, f"raw_preds/pred_batch_{batch_idx}.pt"),
+            )
+            torch.save(
+                target_rescaled.cpu(),
+                os.path.join(self.logger.save_dir, f"raw_preds/target_batch_{batch_idx}.pt"),
+            )
+            torch.save(
+                batch_times.cpu(),
+                os.path.join(self.logger.save_dir, f"raw_preds/time_batch_{batch_idx}.pt"),
+            )
 
         time_step_loss = torch.mean(
             self.loss(

@@ -255,6 +255,7 @@ def main(input_args=None):
     # Load neural-lam configuration and datastore to use
     config, datastore = load_config_and_datastore(config_path=args.config_path)
 
+    
     # Create datamodule
     data_module = WeatherDataModule(
         datastore=datastore,
@@ -317,7 +318,7 @@ def main(input_args=None):
     trainer = pl.Trainer(
         max_epochs=args.epochs,
         deterministic=True,
-        strategy="ddp",
+        strategy="auto",#"ddp",
         accelerator=device_name,
         num_nodes=args.num_nodes,
         devices=devices,
@@ -332,7 +333,7 @@ def main(input_args=None):
     if trainer.global_rank == 0:
         utils.init_training_logger_metrics(
             training_logger, val_steps=args.val_steps_to_log
-        )  # Do after initializing logger
+        )  # Do after initializing logger 
     if args.eval:
         trainer.test(
             model=model,

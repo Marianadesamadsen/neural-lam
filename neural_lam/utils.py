@@ -127,7 +127,7 @@ def load_graph(graph_dir_path, device="cpu"):
     mesh_static_features = loads_file(
         "mesh_features.pt"
     )  # List of (N_mesh[l], d_mesh_static)
-
+ 
     # Some checks for consistency
     assert (
         len(m2m_features) == n_levels

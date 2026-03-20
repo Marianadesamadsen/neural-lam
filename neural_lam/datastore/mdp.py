@@ -12,6 +12,7 @@ import mllam_data_prep as mdp
 import xarray as xr
 from loguru import logger
 from numpy import ndarray
+import numpy as np
 
 # Local
 from ..utils import rank_zero_print
@@ -75,7 +76,7 @@ class MDPDatastore(BaseRegularGridDatastore):
         self._n_boundary_points = n_boundary_points
 
         rank_zero_print("The loaded datastore contains the following features:")
-        for category in ["state", "forcing", "static"]:
+        for category in ["state"]:#, "forcing", "static"]:
             if len(self.get_vars_names(category)) > 0:
                 var_names = self.get_vars_names(category)
                 rank_zero_print(f" {category:<8s}: {' '.join(var_names)}")
@@ -96,18 +97,21 @@ class MDPDatastore(BaseRegularGridDatastore):
             da_split_end = da_split.sel(split_part="end").load().item()
             rank_zero_print(f" {split:<8s}: {da_split_start} to {da_split_end}")
 
-        # find out the dimension order for the stacking to grid-index
-        dim_order = None
-        for input_dataset in self._config.inputs.values():
-            dim_order_ = input_dataset.dim_mapping["grid_index"].dims
-            if dim_order is None:
-                dim_order = dim_order_
-            else:
-                assert (
-                    dim_order == dim_order_
-                ), "all inputs must have the same dimension order"
+        
+        
+        # --- infer CARTESIAN_COORDS from dataset contents (robust) ---
+        coords_available = set(self._ds["state"].coords) | set(self._ds.coords) | set(self._ds.variables)
 
-        self.CARTESIAN_COORDS = dim_order
+        if "x" in coords_available and "y" in coords_available:
+            self.CARTESIAN_COORDS = ["x", "y"]
+            # include z if you want 3D point coordinates
+            if "z" in coords_available:
+                self.CARTESIAN_COORDS.append("z")
+        else:
+            raise ValueError(
+                f"Dataset must contain x/y coords to build graphs. Found coords: {sorted(coords_available)}"
+            )
+
 
     @property
     def root_path(self) -> Path:
@@ -141,11 +145,32 @@ class MDPDatastore(BaseRegularGridDatastore):
         -------
         timedelta
             The length of the time steps as a datetime.timedelta object.
-
         """
-        da_dt = self._ds["time"].diff("time")
-        total_sec = da_dt.dt.total_seconds().isel(time=0).astype(int)
-        return timedelta(seconds=int(total_sec.item()))
+
+        da_time = self._ds["time"]
+
+        # Need at least 2 time points
+        if da_time.sizes.get("time", 0) < 2:
+            return timedelta(seconds=1)
+
+        da_dt = da_time.diff("time")
+
+        # ---- Case 1: datetime / timedelta coordinate (original behavior) ----
+        if np.issubdtype(da_dt.dtype, np.timedelta64):
+            total_sec = da_dt.dt.total_seconds().isel(time=0).astype(int)
+            return timedelta(seconds=int(total_sec.item()))
+
+        # ---- Case 2: numeric time coordinate (float or int) ----
+        # Prefer physical seconds coordinate if available
+        if "t_sec" in self._ds:
+            dt_sec = float(self._ds["t_sec"].diff("time").isel(time=0).values)
+        else:
+            dt_sec = float(da_dt.isel(time=0).values)
+
+        # Prevent zero or negative step
+        dt_sec = max(dt_sec, 1e-12)
+
+        return timedelta(seconds=float(dt_sec))
 
     def get_vars_units(self, category: str) -> List[str]:
         """Return the units of the variables in the given category.
@@ -161,8 +186,8 @@ class MDPDatastore(BaseRegularGridDatastore):
             The units of the variables in the given category.
 
         """
-        if category not in self._ds and category == "forcing":
-            warnings.warn("no forcing data found in datastore")
+        if category not in self._ds and category in ["forcing","static"]:
+            warnings.warn("no forcing or static data found in datastore")
             return []
         return self._ds[f"{category}_feature_units"].values.tolist()
 
@@ -180,8 +205,8 @@ class MDPDatastore(BaseRegularGridDatastore):
             The names of the variables in the given category.
 
         """
-        if category not in self._ds and category == "forcing":
-            warnings.warn("no forcing data found in datastore")
+        if category not in self._ds and category in ["forcing","static"]:
+            warnings.warn("no forcing or static data found in datastore")
             return []
         return self._ds[f"{category}_feature"].values.tolist()
 
@@ -200,8 +225,8 @@ class MDPDatastore(BaseRegularGridDatastore):
             The long names of the variables in the given category.
 
         """
-        if category not in self._ds and category == "forcing":
-            warnings.warn("no forcing data found in datastore")
+        if category not in self._ds and category in ["forcing","static"]:
+            warnings.warn("no forcing or static data found in datastore")
             return []
         return self._ds[f"{category}_feature_long_name"].values.tolist()
 
@@ -263,14 +288,14 @@ class MDPDatastore(BaseRegularGridDatastore):
             The xarray DataArray object with processed dataset.
 
         """
-        if category not in self._ds and category == "forcing":
-            warnings.warn("no forcing data found in datastore")
+        if category not in self._ds and category in ["forcing","static"]:
+            warnings.warn("no forcing or static data found in datastore")
             return None
 
         da_category = self._ds[category]
 
         # set units on x y coordinates if missing
-        for coord in ["x", "y"]:
+        for coord in ["x", "y","z"]:
             if "units" not in da_category[coord].attrs:
                 da_category[coord].attrs["units"] = "m"
 
@@ -290,7 +315,7 @@ class MDPDatastore(BaseRegularGridDatastore):
                 .load()
                 .item()
             )
-            da_category = da_category.sel(time=slice(t_start, t_end))
+            da_category = da_category.sel(time=slice(float(t_start), float(t_end)))
 
         dim_order = self.expected_dim_order(category=category)
         da_category = da_category.transpose(*dim_order)
@@ -361,6 +386,24 @@ class MDPDatastore(BaseRegularGridDatastore):
             boundary point and 0 is not.
 
         """
+         # --- Added: handle unstructured grids (grid_index is 1D node id) ---
+        # Regular grids in this codebase use a stacked MultiIndex grid_index (e.g. from (x,y)).
+        # Unstructured meshes (like your sphere) have a plain 1D grid_index; boundary is not
+        # well-defined in (x,y), so we return an all-zeros mask and avoid unstack() which
+        # can allocate huge arrays.
+        grid_idx = self._ds.indexes.get("grid_index", None)
+        is_multiindex = getattr(grid_idx, "nlevels", 1) > 1
+
+        if not is_multiindex:
+            n = int(self._ds.sizes["grid_index"])
+            return xr.DataArray(
+                np.zeros((n,), dtype=int),  # 0 = not boundary everywhere
+                dims=("grid_index",),
+                coords={"grid_index": self._ds["grid_index"].values},
+                name="boundary_mask",
+            )
+        # --- End added block ---
+
         ds_unstacked = self.unstack_grid_coords(da_or_ds=self._ds)
         da_state_variable = (
             ds_unstacked["state"].isel(time=0).isel(state_feature=0)

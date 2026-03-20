@@ -48,7 +48,7 @@ class BaseDatastore(abc.ABC):
     each of the `x` and `y` coordinates.
     """
 
-    is_ensemble: bool = False
+    is_ensemble: bool = True
     is_forecast: bool = False
 
     @property
@@ -375,7 +375,7 @@ class BaseDatastore(abc.ABC):
     def expected_dim_order(
         self, category: Optional[str] = None
     ) -> tuple[str, ...]:
-        """
+        """ 
         Return the expected dimension order for the dataarray or dataset
         returned by `get_dataarray` for the given category of data. The
         dimension order is the order of the dimensions in the dataarray or
@@ -420,7 +420,7 @@ class BaseDatastore(abc.ABC):
 
             if self.is_ensemble and category == "state":
                 # XXX: for now we only assume ensemble data for state variables
-                dim_order.append("ensemble_member")
+                dim_order.append("ensemble")
 
         dim_order.append("grid_index")
 
@@ -464,7 +464,7 @@ class BaseRegularGridDatastore(BaseDatastore):
     `stack_grid_coords` and `unstack_grid_coords` respectively).
     """
 
-    CARTESIAN_COORDS = ["x", "y"]
+    CARTESIAN_COORDS = ["x", "y","z"]
 
     @cached_property
     @abc.abstractmethod
@@ -535,7 +535,7 @@ class BaseRegularGridDatastore(BaseDatastore):
         xy_dim_order = [d for d in dims if d in self.CARTESIAN_COORDS]
 
         if xy_dim_order != self.CARTESIAN_COORDS:
-            da_or_ds_unstacked = da_or_ds_unstacked.transpose("x", "y")
+            da_or_ds_unstacked = da_or_ds_unstacked.transpose("x", "y", "z")
 
         return da_or_ds_unstacked
 
@@ -589,4 +589,4 @@ class BaseRegularGridDatastore(BaseDatastore):
             The number of grid points in the dataset.
 
         """
-        return self.grid_shape_state.x * self.grid_shape_state.y
+        return self.grid_shape_state.x * self.grid_shape_state.y * self.grid_shape_state.z
