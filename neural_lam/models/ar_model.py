@@ -56,6 +56,7 @@ class ARModel(pl.LightningModule):
             da_boundary_mask = datastore.boundary_mask
         except Exception:
             da_boundary_mask = None
+
         num_past_forcing_steps = args.num_past_forcing_steps
         num_future_forcing_steps = args.num_future_forcing_steps
 
@@ -139,7 +140,7 @@ class ARModel(pl.LightningModule):
         self.register_buffer(
             "interior_mask", 1.0 - self.boundary_mask, persistent=False
         )  # (num_grid_nodes, 1), 1 for non-border
-
+ 
         self.val_metrics: Dict[str, List] = {
             "mse": [],
         }
@@ -300,16 +301,16 @@ class ARModel(pl.LightningModule):
 
     def training_step(self, batch):
         """
-        Train on single batch
+        Train on single batch 
         """
         prediction, target, pred_std, _ = self.common_step(batch)
 
-        # Compute loss
+        # Compute loss 
         batch_loss = torch.mean(
             self.loss(
                 prediction, target, pred_std, mask=self.interior_mask_bool
             )
-        )  # mean over unrolled times and batch
+        )  # mean over unrolled times and batch 
 
         log_dict = {"train_loss": batch_loss}
         self.log_dict(
@@ -320,7 +321,7 @@ class ARModel(pl.LightningModule):
             sync_dist=True,
             batch_size=batch[0].shape[0],
         )
-        return batch_loss
+        return batch_loss 
 
     def all_gather_cat(self, tensor_to_gather): 
         """
@@ -398,16 +399,12 @@ class ARModel(pl.LightningModule):
         if self.trainer.is_global_zero:
             os.makedirs(os.path.join(self.logger.save_dir, "raw_preds"), exist_ok=True)
 
-            # rescale to physical units for qualitative inspection
-            prediction_rescaled = prediction * self.state_std + self.state_mean
-            target_rescaled = target * self.state_std + self.state_mean
-
             torch.save(
-                prediction_rescaled.cpu(),
+                prediction.cpu(),
                 os.path.join(self.logger.save_dir, f"raw_preds/pred_batch_{batch_idx}.pt"),
             )
             torch.save(
-                target_rescaled.cpu(),
+                target.cpu(),
                 os.path.join(self.logger.save_dir, f"raw_preds/target_batch_{batch_idx}.pt"),
             )
             torch.save(

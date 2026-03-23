@@ -17,7 +17,7 @@ class BaseGraphModel(ARModel):
 
     def __init__(self, args, config: NeuralLAMConfig, datastore: BaseDatastore):
         super().__init__(args, config=config, datastore=datastore)
-
+ 
         # Load graph with static features
         # NOTE: (IMPORTANT!) mesh nodes MUST have the first
         # num_mesh_nodes indices,
@@ -39,7 +39,7 @@ class BaseGraphModel(ARModel):
             f"nodes ({self.num_grid_nodes} grid, {self.num_mesh_nodes} mesh)"
         )
 
-        # grid_dim from data + static
+        # grid_dim from data + static 
         self.g2m_edges, g2m_dim = self.g2m_features.shape
         self.m2g_edges, m2g_dim = self.m2g_features.shape
 
@@ -309,11 +309,11 @@ class BaseGraphModel(ARModel):
             dim=-1,
         )
 
-        # Embed all features
+        # Embed all features 
         grid_emb = self.grid_embedder(grid_features)  # (B, num_grid_nodes, d_h)
         g2m_emb = self.g2m_embedder(self.g2m_features)  # (M_g2m, d_h)
-        m2g_emb = self.m2g_embedder(self.m2g_features)  # (M_m2g, d_h)
-        mesh_emb = self.embedd_mesh_nodes()
+        m2g_emb = self.m2g_embedder(self.m2g_features)  # (M_m2g, d_h) 
+        mesh_emb = self.embedd_mesh_nodes() 
 
         # Map from grid to mesh
         mesh_emb_expanded = self.expand_to_batch(
@@ -321,16 +321,16 @@ class BaseGraphModel(ARModel):
         )  # (B, num_mesh_nodes, d_h)
         g2m_emb_expanded = self.expand_to_batch(g2m_emb, batch_size)
 
-        # This also splits representation into grid and mesh
+        # This also splits representation into grid and mesh 
         mesh_rep = self.g2m_gnn(
             grid_emb, mesh_emb_expanded, g2m_emb_expanded
         )  # (B, num_mesh_nodes, d_h)
         # Also MLP with residual for grid representation
         grid_rep = grid_emb + self.encoding_grid_mlp(
             grid_emb
-        )  # (B, num_grid_nodes, d_h)
+        )  # (B, num_grid_nodes, d_h) 
 
-        # Run processor step
+        # Run processor step 
         mesh_rep = self.process_step(mesh_rep)
 
         # Map back from mesh to grid
@@ -349,7 +349,7 @@ class BaseGraphModel(ARModel):
                 2, dim=-1
             )  # both (B, num_grid_nodes, d_f)
             # NOTE: The predicted std. is not scaled in any way here
-            # linter for some reason does not think softplus is callable
+            # linter for some reason does not think softplus is callable 
             # pylint: disable-next=not-callable
             pred_std = torch.nn.functional.softplus(pred_std_raw)
         else:

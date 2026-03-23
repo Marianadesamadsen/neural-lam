@@ -62,7 +62,7 @@ class GraphLAM(BaseGraphModel):
         and number of mesh nodes that should be ignored in encoding/decoding
         """
         return self.mesh_static_features.shape[0], 0
-
+ 
     def embedd_mesh_nodes(self):
         """
         Embed static mesh features

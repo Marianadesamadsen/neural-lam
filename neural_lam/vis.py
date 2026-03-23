@@ -19,14 +19,12 @@ def plot_error_map(errors, datastore: BaseRegularGridDatastore, title=None):
     """
     errors_np = errors.T.cpu().numpy()  # (d_f, pred_steps)
 
-    # Make sure we always end up with shape (d_f, pred_steps)
-    if errors_np.ndim == 0:
+    if errors_np.ndim == 0: # example errors_np = [0.5] -> [[0.5]]
         errors_np = errors_np.reshape(1, 1)
-    elif errors_np.ndim == 1:
-        # Interpret 1D input as one feature across prediction steps
+    elif errors_np.ndim == 1: # example errors_np = [0.3,0.4] -> [[0.3,0.4]]
         errors_np = errors_np[np.newaxis, :]
     elif errors_np.ndim == 2:
-        errors_np = errors_np.T
+        errors_np = errors_np
     else:
         raise ValueError(f"Unsupported errors shape: {errors_np.shape}")
 
