@@ -344,6 +344,7 @@ def main(input_args=None):
             model=model,
             datamodule=data_module,
             ckpt_path=args.load,
+            weights_only=False,
         )
     else:
         trainer.fit(model=model, datamodule=data_module, ckpt_path=args.load)

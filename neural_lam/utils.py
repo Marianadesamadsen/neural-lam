@@ -306,7 +306,7 @@ def fractional_plot_bundle(fraction):
 
 
 @rank_zero_only
-def rank_zero_print(*args, **kwargs):
+def rank_zero_print(*args, **kwargs): 
     """Print only from rank 0 process"""
     print(*args, **kwargs)
 

@@ -493,22 +493,6 @@ class ARModel(pl.LightningModule):
         # prediction: (B, pred_steps, num_grid_nodes, d_f)
         # pred_std: (B, pred_steps, num_grid_nodes, d_f) or (d_f,)
 
-        if self.trainer.is_global_zero:
-            os.makedirs(os.path.join(self.logger.save_dir, "raw_preds"), exist_ok=True)
-
-            torch.save(
-                prediction.cpu(),
-                os.path.join(self.logger.save_dir, f"raw_preds/pred_batch_{batch_idx}.pt"),
-            )
-            torch.save(
-                target.cpu(),
-                os.path.join(self.logger.save_dir, f"raw_preds/target_batch_{batch_idx}.pt"),
-            )
-            torch.save(
-                batch_times.cpu(),
-                os.path.join(self.logger.save_dir, f"raw_preds/time_batch_{batch_idx}.pt"),
-            )
-
         time_step_loss = torch.mean(
             self.loss(
                 prediction, target, pred_std, mask=self.interior_mask_bool

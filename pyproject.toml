@@ -36,8 +36,8 @@ dependencies = [
     "boto3>=1.35.32",
     "nvidia-ml-py>=13.580.82",
     "pynvml>=12.0.0",
-    "cf-xarray>=0.9.4",
-    "mllam-data-prep",
+    "cf-xarray>=0.9.4"
+    #"mllam-data-prep",
 ]
 requires-python = ">=3.10"
 
