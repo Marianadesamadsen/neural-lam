@@ -124,3 +124,10 @@ def test_training(datastore_name):
 def test_training_output_std():
     datastore = init_datastore_example("mdp")  # Test only with mdp datastore
     run_simple_training(datastore, set_output_std=True)
+
+    # save the path to the model checkpoint in to the request object so we can
+    # use in the inference test
+    request.config.cache.set(
+        "model_checkpoint_path",
+        model.trainer.checkpoint_callback.best_model_path,
+    )

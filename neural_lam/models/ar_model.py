@@ -4,11 +4,14 @@ import warnings
 from typing import Any, Dict, List
 
 # Third-party
+import cf_xarray as cfxr
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import pytorch_lightning as pl
 import torch
 import xarray as xr
+from loguru import logger
 
 # First-party
 from neural_lam.utils import get_integer_time
@@ -386,6 +389,100 @@ class ARModel(pl.LightningModule):
         for metric_list in self.val_metrics.values():
             metric_list.clear()
 
+    def _save_predictions_to_zarr(
+        self,
+        batch_times: torch.Tensor,
+        batch_predictions: torch.Tensor,
+        batch_idx: int,
+        zarr_output_path: str,
+    ):
+        """
+        Save state predictions for single batch to zarr dataset. Will append to
+        existing dataset for batch_idx > 0. Resulting dataset will contain a
+        variable named `state` with coordinates (start_time,
+        elapsed_forecast_duration, grid_index, state_feature).
+
+        Parameters
+        ----------
+        batch_times : torch.Tensor[int]
+            The times for the batch, given as epoch time in nanoseconds. Shape
+            is (B, args.pred_steps) where B is the batch size and
+            args.pred_steps is the number of prediction steps.
+        batch_predictions : torch.Tensor[float]
+            The predictions for the batch, given as (B, args.pred_steps,
+            num_grid_nodes, d_f) where B is the batch size, args.pred_steps is
+            the number of prediction steps, num_grid_nodes is the number of
+            grid nodes, and d_f is the number of state features.
+        batch_idx : int
+            The index of the batch in the current epoch.
+        """
+        batch_size = batch_predictions.shape[0]
+        # Convert predictions to DataArray using _create_dataarray_from_tensor
+        das_pred = []
+        for i in range(len(batch_times)):
+            da_pred = self._create_dataarray_from_tensor(
+                tensor=batch_predictions[i],
+                time=batch_times[i],
+                split="test",
+                category="state",
+            )
+
+            t0 = da_pred.coords["time"].values[0]
+            da_pred.coords["analysis_time"] = t0
+            da_pred.coords["elapsed_forecast_duration"] = da_pred.time - t0
+            # set CF-standard names for forecast data in anticipation of
+            # input/output to neural-lam eventually all being cf-compliant
+            da_pred.analysis_time.attrs[
+                "standard_name"
+            ] = "forecast_reference_time"
+            da_pred.elapsed_forecast_duration.attrs[
+                "standard_name"
+            ] = "forecast_period"
+            da_pred = da_pred.swap_dims({"time": "elapsed_forecast_duration"})
+            da_pred.name = "state"
+
+            das_pred.append(da_pred)
+
+        da_pred_batch = xr.concat(das_pred, dim="start_time")
+
+        # Apply chunking along analysis_time so that each batch is saved as a
+        # separate chunk
+        da_pred_batch = da_pred_batch.chunk({"start_time": batch_size})
+
+        # copy variables that contain the units and long_name attributes
+        # from the source datastore
+        # XXX: currently it is hardcoded in mllam-data-prep that these are
+        # called {data_category}_feature_{long_name,units}, this should
+        # probably be made a format string in mllam-data-prep so that these
+        # can be correctly parsed/constructed
+        for attr in ["long_name", "units"]:
+            var_name = f"state_feature_{attr}"
+            da_pred_batch.coords[var_name] = self._datastore._ds[var_name]
+
+        # to handle MultiIndexes (see below) we need to have an xr.Dataset, so
+        # we make that here. For now we are only making predictions for "state"
+        ds_pred_batch = da_pred_batch.to_dataset(name="state")
+
+        # we need to ensure that if `grid_index` is a MultiIndex, it is
+        # serialised so that it can be written to netcdf/zarr. We use
+        # `cf_xarray` for this (see
+        # https://cf-xarray.readthedocs.io/en/latest/coding.html) since they
+        # have implemented a cf-compliant way to safely roundtrip this
+        for idx_name in list(ds_pred_batch.indexes):
+            idx = ds_pred_batch.indexes[idx_name]
+            if isinstance(idx, pd.MultiIndex):
+                ds_pred_batch = cfxr.encode_multi_index_as_compress(
+                    ds_pred_batch, idxnames=[idx_name]
+                )
+
+        if batch_idx == 0:
+            logger.info(f"Saving predictions to {zarr_output_path}")
+            ds_pred_batch.to_zarr(zarr_output_path, mode="w", consolidated=True)
+        else:
+            ds_pred_batch.to_zarr(
+                zarr_output_path, mode="a", append_dim="start_time"
+            )
+
     # pylint: disable-next=unused-argument
     def test_step(self, batch, batch_idx):
         """
@@ -393,8 +490,8 @@ class ARModel(pl.LightningModule):
         """
         # TODO Here batch_times can be used for plotting routines
         prediction, target, pred_std, batch_times = self.common_step(batch)
-        # prediction: (B, pred_steps, num_grid_nodes, d_f) pred_std: (B,
-        # pred_steps, num_grid_nodes, d_f) or (d_f,)
+        # prediction: (B, pred_steps, num_grid_nodes, d_f)
+        # pred_std: (B, pred_steps, num_grid_nodes, d_f) or (d_f,)
 
         if self.trainer.is_global_zero:
             os.makedirs(os.path.join(self.logger.save_dir, "raw_preds"), exist_ok=True)
@@ -465,6 +562,14 @@ class ARModel(pl.LightningModule):
         ]
         self.spatial_loss_maps.append(log_spatial_losses)
         # (B, N_log, num_grid_nodes)
+
+        if self.args.save_eval_to_zarr_path:
+            self._save_predictions_to_zarr(
+                batch_times=batch_times,
+                batch_predictions=prediction,
+                batch_idx=batch_idx,
+                zarr_output_path=self.args.save_eval_to_zarr_path,
+            )
 
         # Plot example predictions (on rank 0 only)
         if (

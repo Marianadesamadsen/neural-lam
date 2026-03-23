@@ -24,7 +24,7 @@ MODELS = {
 }
 
 
-@logger.catch
+@logger.catch(reraise=True)
 def main(input_args=None):
     """Main function for training and evaluating models."""
     parser = ArgumentParser(
@@ -157,6 +157,11 @@ def main(input_args=None):
         help="Eval model on given data split (val/test). If not given, "
         "train model.",
         choices=["val", "test"],
+    )
+    parser.add_argument(
+        "--save_eval_to_zarr_path",
+        type=str,
+        help="Save evaluation results to zarr dataset at given path ",
     )
     parser.add_argument(
         "--ar_steps_eval",
