@@ -436,7 +436,7 @@ class CartesianGridShape:
 
     x: int
     y: int
-
+    z: int
 
 class BaseRegularGridDatastore(BaseDatastore):
     """
@@ -464,7 +464,7 @@ class BaseRegularGridDatastore(BaseDatastore):
     `stack_grid_coords` and `unstack_grid_coords` respectively).
     """
 
-    CARTESIAN_COORDS = ["x", "y","z"]
+    CARTESIAN_COORDS = ["x", "y", "z"]
 
     @cached_property
     @abc.abstractmethod
