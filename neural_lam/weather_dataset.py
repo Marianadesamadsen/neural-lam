@@ -482,10 +482,16 @@ class WeatherDataset(torch.utils.data.Dataset):
             da_target_states.values, dtype=tensor_dtype
         )
 
-        target_times = torch.tensor(
-            da_target_times.astype("datetime64[ns]").astype("int64").values,
-            dtype=torch.int64,
-        )
+        if np.issubdtype(da_target_times.dtype, np.datetime64):
+            target_times = torch.tensor(
+                da_target_times.astype("datetime64[ns]").astype("int64").values,
+                dtype=torch.int64,
+            )
+        else:
+            target_times = torch.tensor(
+                da_target_times.values,
+                dtype=torch.float64,
+            )
 
         forcing = torch.tensor(da_forcing_windowed.values, dtype=tensor_dtype)
 

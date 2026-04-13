@@ -168,6 +168,10 @@ class ARModel(pl.LightningModule):
             self._datastore.step_length
         )
 
+        self.time_step_int = float(self._datastore.step_length.total_seconds())
+        self.time_step_unit = "seconds"
+
+
     def _create_dataarray_from_tensor(
         self,
         tensor: torch.Tensor,
@@ -200,7 +204,12 @@ class ARModel(pl.LightningModule):
         # not how this should be done but whether WeatherDataset should be
         # provided to ARModel or where to put plotting still needs discussion
         weather_dataset = WeatherDataset(datastore=self._datastore, split=split)
-        time = np.array(time.cpu(), dtype="datetime64[ns]")
+
+        if isinstance(time,np.datetime64):
+            time = np.array(time.cpu(), dtype="datetime64[ns]")
+        else:
+            time = np.array(time.cpu(), dtype=np.float64)
+
         da = weather_dataset.create_dataarray_from_tensor(
             tensor=tensor, time=time, category=category
         )
@@ -418,12 +427,13 @@ class ARModel(pl.LightningModule):
         """
         batch_size = batch_predictions.shape[0]
         # Convert predictions to DataArray using _create_dataarray_from_tensor
+        eval_split = self.args.eval or "test"
         das_pred = []
         for i in range(len(batch_times)):
             da_pred = self._create_dataarray_from_tensor(
                 tensor=batch_predictions[i],
                 time=batch_times[i],
-                split="test",
+                split=eval_split,
                 category="state",
             )
 
@@ -460,7 +470,7 @@ class ARModel(pl.LightningModule):
             da_pred_batch.coords[var_name] = self._datastore._ds[var_name]
 
         # to handle MultiIndexes (see below) we need to have an xr.Dataset, so
-        # we make that here. For now we are only making predictions for "state"
+        # we make that here. For now we are only making predictions for "state" 
         ds_pred_batch = da_pred_batch.to_dataset(name="state")
 
         # we need to ensure that if `grid_index` is a MultiIndex, it is
@@ -548,12 +558,29 @@ class ARModel(pl.LightningModule):
         # (B, N_log, num_grid_nodes)
 
         if self.args.save_eval_to_zarr_path:
-            self._save_predictions_to_zarr(
-                batch_times=batch_times,
-                batch_predictions=prediction,
-                batch_idx=batch_idx,
-                zarr_output_path=self.args.save_eval_to_zarr_path,
-            )
+            if self.trainer.is_global_zero:
+                dir = os.path.join(self.args.save_eval_to_zarr_path, "raw_preds")
+                os.makedirs(dir, exist_ok=True)
+
+                torch.save(
+                    prediction.cpu(),
+                    os.path.join(dir, f"pred_batch_{batch_idx}.pt"),
+                )
+                torch.save(
+                    target.cpu(),
+                    os.path.join(dir, f"target_batch_{batch_idx}.pt"),
+                )
+                torch.save(
+                    batch_times.cpu(),
+                    os.path.join(dir, f"time_batch_{batch_idx}.pt"),
+                )
+
+            # self._save_predictions_to_zarr(
+            #     batch_times=batch_times,
+            #     batch_predictions=prediction,
+            #     batch_idx=batch_idx,
+            #     zarr_output_path=self.args.save_eval_to_zarr_path,
+            # )
 
         # Plot example predictions (on rank 0 only)
         if (
@@ -566,12 +593,12 @@ class ARModel(pl.LightningModule):
                 self.n_example_pred - self.plotted_examples,
             )
 
-            self.plot_examples(
-                batch,
-                n_additional_examples,
-                prediction=prediction,
-                split="test",
-            )
+            # self.plot_examples(
+            #     batch,
+            #     n_additional_examples,
+            #     prediction=prediction,
+            #     split="test",
+            # )
 
     def plot_examples(self, batch, n_examples, split, prediction=None):
         """
@@ -819,7 +846,7 @@ class ARModel(pl.LightningModule):
                     error=loss_map,
                     datastore=self._datastore,
                     title=f"Test loss, t={t_i} "
-                    f"({(self.time_step_int * t_i)} {self.time_step_int_unit})",
+                    #f"({(self.time_step_int * t_i)} {self.time_step_int_unit})",
                 )
                 for t_i, loss_map in zip(
                     self.args.val_steps_to_log, mean_spatial_loss
