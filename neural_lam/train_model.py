@@ -3,6 +3,7 @@ import json
 import random
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+from pytorch_lightning.callbacks import EarlyStopping
 
 # Third-party
 # for logging the model:
@@ -250,7 +251,7 @@ def main(input_args=None):
                 f"validation is only unrolled {args.ar_steps_eval} steps. "
                 "Adjust --var_leads_metric_watch."
             )
-
+ 
     # Get an (actual) random run id as a unique identifier
     random_run_id = random.randint(0, 9999)
 
@@ -259,7 +260,6 @@ def main(input_args=None):
 
     # Load neural-lam configuration and datastore to use
     config, datastore = load_config_and_datastore(config_path=args.config_path)
-
     
     # Create datamodule
     data_module = WeatherDataModule(
@@ -292,9 +292,13 @@ def main(input_args=None):
         except ValueError:
             raise ValueError("devices should be 'auto' or a list of integers")
 
+    print("torch.cuda.is_available():", torch.cuda.is_available())
+    print("device_name:", device_name)
+    print("devices arg:", devices)
+
     # Load model parameters Use new args for model
     ModelClass = MODELS[args.model]
-    model = ModelClass(args, config=config, datastore=datastore)
+    model = ModelClass(args, config=config, datastore=datastore) #GNN
 
     if args.eval:
         prefix = f"eval-{args.eval}-"
@@ -319,7 +323,16 @@ def main(input_args=None):
         monitor="val_mean_loss",
         mode="min",
         save_last=True,
+    ) 
+
+    early_stopping_callback = EarlyStopping(
+        monitor="val_mean_loss",
+        min_delta=1e-4,
+        patience=10,
+        verbose=True,
+        mode="min",
     )
+
     trainer = pl.Trainer(
         max_epochs=args.epochs,
         deterministic=True,
@@ -329,7 +342,7 @@ def main(input_args=None):
         devices=devices,
         logger=training_logger,
         log_every_n_steps=1,
-        callbacks=[checkpoint_callback],
+        callbacks=[checkpoint_callback,early_stopping_callback],
         check_val_every_n_epoch=args.val_interval,
         precision=args.precision,
     )
