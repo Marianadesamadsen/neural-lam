@@ -53,12 +53,8 @@ class BaseDatastore(abc.ABC):
     each of the `x` and `y` coordinates.
     """
 
-<<<<<<< ours
     is_ensemble: bool = True
-=======
-    is_ensemble: bool = False
     has_ensemble_forcing: bool = False
->>>>>>> theirs
     is_forecast: bool = False
 
     @property
@@ -449,16 +445,10 @@ class BaseDatastore(abc.ABC):
                 elif not self.is_forecast:
                     dim_order.append("time")
 
-<<<<<<< ours
-            if self.is_ensemble and category == "state":
-                # XXX: for now we only assume ensemble data for state variables
-                dim_order.append("ensemble")
-=======
             if category == "state" and self.is_ensemble:
                 dim_order.append("ensemble_member")
             elif category == "forcing" and self.has_ensemble_forcing:
                 dim_order.append("ensemble_member")
->>>>>>> theirs
 
         dim_order.append("grid_index")
 
@@ -474,7 +464,6 @@ class CartesianGridShape:
 
     x: int
     y: int
-    z: int
 
 class BaseRegularGridDatastore(BaseDatastore):
     """
@@ -506,11 +495,7 @@ class BaseRegularGridDatastore(BaseDatastore):
     `stack_grid_coords` and `unstack_grid_coords` respectively).
     """
 
-<<<<<<< ours
-    CARTESIAN_COORDS = ["x", "y", "z"]
-=======
     spatial_coordinates = ("x", "y")
->>>>>>> theirs
 
     @cached_property
     @abc.abstractmethod
@@ -579,12 +564,6 @@ class BaseRegularGridDatastore(BaseDatastore):
 
         # Ensure that the x, y dimensions are in the correct order
         dims = da_or_ds_unstacked.dims
-<<<<<<< ours
-        xy_dim_order = [d for d in dims if d in self.CARTESIAN_COORDS]
-
-        if xy_dim_order != self.CARTESIAN_COORDS:
-            da_or_ds_unstacked = da_or_ds_unstacked.transpose("x", "y", "z")
-=======
         xy_dim_order = [d for d in dims if d in self.spatial_coordinates]
 
         if xy_dim_order != self.spatial_coordinates:
@@ -606,7 +585,6 @@ class BaseRegularGridDatastore(BaseDatastore):
                 first_xy_dim_index + 1, self.spatial_coordinates[1]
             )
             da_or_ds_unstacked = da_or_ds_unstacked.transpose(*new_dim_order)
->>>>>>> theirs
 
         return da_or_ds_unstacked
 
