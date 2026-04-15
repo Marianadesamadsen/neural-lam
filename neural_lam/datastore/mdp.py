@@ -318,8 +318,24 @@ class MDPDatastore(BaseRegularGridDatastore):
                 .load()
                 .item()
             )
-            da_category = da_category.sel(ensemble_member=slice(float(ensemble_start), float(ensemble_end)))
-    
+            da_category = da_category.sel(ensemble_member=slice(int(ensemble_start), int(ensemble_end)))
+
+        else:
+            if "time" in da_category.dims:
+                time_start = (
+                    self._ds.splits.sel(split_name=split)
+                    .sel(split_part="start")
+                    .load()
+                    .item()
+                )
+                time_end = (
+                    self._ds.splits.sel(split_name=split)
+                    .sel(split_part="end")
+                    .load()
+                    .item()
+                )
+                da_category = da_category.sel(time=slice(float(time_start), float(time_end)))
+
         dim_order = self.expected_dim_order(category=category)
         da_category = da_category.transpose(*dim_order)
 
