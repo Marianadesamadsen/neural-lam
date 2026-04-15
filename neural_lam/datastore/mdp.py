@@ -125,7 +125,7 @@ class MDPDatastore(BaseRegularGridDatastore):
                     dim_order == dim_order_
                 ), "all inputs must have the same dimension order"
 
-        self.spatial_coordinates = dim_order
+        self.spatial_coordinates = ("lat", "lon") #dim_order
 
     @property
     def root_path(self) -> Path:
@@ -297,29 +297,29 @@ class MDPDatastore(BaseRegularGridDatastore):
 
         da_category = self._ds[category]
 
-        # set units on x y coordinates if missing
-        for coord in ["x", "y","z"]:
-            if "units" not in da_category[coord].attrs:
-                da_category[coord].attrs["units"] = "m"
+        # # set units on x y coordinates if missing
+        # for coord in ["x", "y"]:
+        #     if "units" not in da_category[coord].attrs:
+        #         da_category[coord].attrs["units"] = "m"
 
         # set multi-index for grid-index
         da_category = da_category.set_index(grid_index=self.spatial_coordinates)
 
-        if "time" in da_category.dims:
-            t_start = (
+        if "ensemble_member" in da_category.dims:
+            ensemble_start = (
                 self._ds.splits.sel(split_name=split)
                 .sel(split_part="start")
                 .load()
                 .item()
             )
-            t_end = (
+            ensemble_end = (
                 self._ds.splits.sel(split_name=split)
                 .sel(split_part="end")
                 .load()
                 .item()
             )
-            da_category = da_category.sel(time=slice(float(t_start), float(t_end)))
-
+            da_category = da_category.sel(ensemble_member=slice(float(ensemble_start), float(ensemble_end)))
+    
         dim_order = self.expected_dim_order(category=category)
         da_category = da_category.transpose(*dim_order)
 

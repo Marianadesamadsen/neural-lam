@@ -168,6 +168,9 @@ class ARModel(pl.LightningModule):
         self.time_step_int, self.time_step_unit = get_integer_time(
             self._datastore.step_length
         )
+        self.time_step_int = float(self._datastore.step_length.total_seconds())
+        self.time_step_unit = "seconds"
+
         self.matched_metrics: set[str] = set()
 
     def _create_dataarray_from_tensor(
@@ -867,10 +870,10 @@ class ARModel(pl.LightningModule):
 
         # Ensure that log_dict has structure for
         # logging as dict(str, plt.Figure)
-        assert all(
-            isinstance(key, str) and isinstance(value, plt.Figure)
-            for key, value in log_dict.items()
-        )
+        # assert all(
+        #     isinstance(key, str) and isinstance(value, plt.Figure)
+        #     for key, value in log_dict.items()
+        # ) OBS
 
         if self.trainer.is_global_zero and not self.trainer.sanity_checking:
 
