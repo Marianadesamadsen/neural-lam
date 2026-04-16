@@ -899,63 +899,64 @@ class ARModel(pl.LightningModule):
         # Create error maps for all test metrics
         self.aggregate_and_plot_metrics(self.test_metrics, prefix="test")
 
-        # Plot spatial loss maps
-        spatial_loss_tensor = self.all_gather_cat(
-            torch.cat(self.spatial_loss_maps, dim=0)
-        )  # (N_test, N_log, num_grid_nodes)
-        if self.trainer.is_global_zero:
-            mean_spatial_loss = torch.mean(
-                spatial_loss_tensor, dim=0
-            )  # (N_log, num_grid_nodes)
+        if False:
+            # Plot spatial loss maps
+            spatial_loss_tensor = self.all_gather_cat(
+                torch.cat(self.spatial_loss_maps, dim=0)
+            )  # (N_test, N_log, num_grid_nodes)
+            if self.trainer.is_global_zero:
+                mean_spatial_loss = torch.mean(
+                    spatial_loss_tensor, dim=0
+                )  # (N_log, num_grid_nodes)
 
-            loss_map_figs = [
-                vis.plot_spatial_error(
-                    error=loss_map,
-                    datastore=self._datastore,
-                    title=f"Test loss, t={t_i} "
-                    f"({(self.time_step_int * t_i)} {self.time_step_unit})",
-                )
-                for t_i, loss_map in zip(
-                    self.args.val_steps_to_log, mean_spatial_loss
-                )
-            ]
-
-            # log all to same key, sequentially
-            for i, fig in enumerate(loss_map_figs):
-                key = "test_loss"
-                if not isinstance(self.logger, pl.loggers.WandbLogger):
-                    key = f"{key}_{i}"
-                if hasattr(self.logger, "log_image"):
-                    self.logger.log_image(key=key, images=[fig])
-
-            # also make without title and save as pdf
-            pdf_loss_map_figs = [
-                vis.plot_spatial_error(
-                    error=loss_map, datastore=self._datastore
-                )
-                for loss_map in mean_spatial_loss
-            ]
-            pdf_loss_maps_dir = os.path.join(
-                self.logger.save_dir, "spatial_loss_maps"
-            )
-            os.makedirs(pdf_loss_maps_dir, exist_ok=True)
-            for t_i, fig in zip(self.args.val_steps_to_log, pdf_loss_map_figs):
-                fig.savefig(os.path.join(pdf_loss_maps_dir, f"loss_t{t_i}.pdf"))
-            # save mean spatial loss as .pt file also
-            torch.save(
-                mean_spatial_loss.cpu(),
-                os.path.join(self.logger.save_dir, "mean_spatial_loss.pt"),
-            )
-
-            if getattr(self.args, "metrics_watch", None):
-                unmatched = set(self.args.metrics_watch) - self.matched_metrics
-                if unmatched:
-                    warnings.warn(
-                        "The following metrics in --metrics_watch "
-                        "were not found during test phase: "
-                        f"{sorted(unmatched)}. Ensure the metric prefix "
-                        "matches the evaluation mode (expected 'test_')."
+                loss_map_figs = [
+                    vis.plot_spatial_error(
+                        error=loss_map,
+                        datastore=self._datastore,
+                        title=f"Test loss, t={t_i} "
+                        f"({(self.time_step_int * t_i)} {self.time_step_unit})",
                     )
+                    for t_i, loss_map in zip(
+                        self.args.val_steps_to_log, mean_spatial_loss
+                    )
+                ]
+
+                # log all to same key, sequentially
+                for i, fig in enumerate(loss_map_figs):
+                    key = "test_loss"
+                    if not isinstance(self.logger, pl.loggers.WandbLogger):
+                        key = f"{key}_{i}"
+                    if hasattr(self.logger, "log_image"):
+                        self.logger.log_image(key=key, images=[fig])
+
+                # also make without title and save as pdf
+                pdf_loss_map_figs = [
+                    vis.plot_spatial_error(
+                        error=loss_map, datastore=self._datastore
+                    )
+                    for loss_map in mean_spatial_loss
+                ]
+                pdf_loss_maps_dir = os.path.join(
+                    self.logger.save_dir, "spatial_loss_maps"
+                )
+                os.makedirs(pdf_loss_maps_dir, exist_ok=True)
+                for t_i, fig in zip(self.args.val_steps_to_log, pdf_loss_map_figs):
+                    fig.savefig(os.path.join(pdf_loss_maps_dir, f"loss_t{t_i}.pdf"))
+                # save mean spatial loss as .pt file also
+                torch.save(
+                    mean_spatial_loss.cpu(),
+                    os.path.join(self.logger.save_dir, "mean_spatial_loss.pt"),
+                )
+
+                if getattr(self.args, "metrics_watch", None):
+                    unmatched = set(self.args.metrics_watch) - self.matched_metrics
+                    if unmatched:
+                        warnings.warn(
+                            "The following metrics in --metrics_watch "
+                            "were not found during test phase: "
+                            f"{sorted(unmatched)}. Ensure the metric prefix "
+                            "matches the evaluation mode (expected 'test_')."
+                        )
 
         self.matched_metrics = set()
         self.spatial_loss_maps.clear()

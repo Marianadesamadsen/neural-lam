@@ -303,7 +303,7 @@ class MDPDatastore(BaseRegularGridDatastore):
         #         da_category[coord].attrs["units"] = "m"
 
         # set multi-index for grid-index
-        da_category = da_category.set_index(grid_index=self.spatial_coordinates)
+        #da_category = da_category.set_index(grid_index=self.spatial_coordinates)
 
         if "ensemble_member" in da_category.dims:
             ensemble_start = (

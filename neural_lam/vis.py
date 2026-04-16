@@ -90,6 +90,11 @@ def plot_on_axis(
         datastore.grid_shape_state.x,
         datastore.grid_shape_state.y,
     )
+    # Manual
+    xdim, ydim = datastore.spatial_coordinates
+    grid_shape = (
+        datastore._ds["state"][xdim].size,
+        datastore._ds["state"][ydim].size,)
     lons = lats_lons[:, 0].reshape(grid_shape)
     lats = lats_lons[:, 1].reshape(grid_shape)
 
@@ -97,7 +102,6 @@ def plot_on_axis(
         da = da.transpose("x", "y")
 
     values = da.values.reshape(grid_shape)
-
     mesh = ax.pcolormesh(
         lons,
         lats,
