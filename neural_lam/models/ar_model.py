@@ -24,6 +24,9 @@ from ..datastore import BaseDatastore
 from ..loss_weighting import get_state_feature_weighting
 from ..weather_dataset import WeatherDataset
 
+import time
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from matplotlib import colors
 
 class ARModel(pl.LightningModule):
     """
@@ -173,6 +176,19 @@ class ARModel(pl.LightningModule):
 
         self.matched_metrics: set[str] = set()
 
+        self._train_interbatch_gap_times  = []
+        self._train_batch_compute_times = []
+        self._epoch_start_time = None
+        self._prev_batch_end_time = None
+
+        # Store one validation example for visualization
+        self._val_vis_prediction = None
+        self._val_vis_target = None
+        self._val_vis_time = None
+
+        # Visualization settings
+        self._val_vis_every_n_epochs = 10
+
     def _create_dataarray_from_tensor(
         self,
         tensor: torch.Tensor,
@@ -316,6 +332,18 @@ class ARModel(pl.LightningModule):
         """
         Train on single batch 
         """
+
+        now = time.perf_counter()
+
+        # Time since previous batch ended: proxy for data loading / waiting / overhead
+        if self._prev_batch_end_time is not None:
+            noncompute_gap = now - self._prev_batch_end_time
+            self._train_interbatch_gap_times .append(noncompute_gap)
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        t0 = time.perf_counter()
+
         prediction, target, pred_std, _ = self.common_step(batch)
 
         # Compute loss 
@@ -324,6 +352,12 @@ class ARModel(pl.LightningModule):
                 prediction, target, pred_std, mask=self.interior_mask_bool
             )
         )  # mean over unrolled times and batch 
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        t1 = time.perf_counter()
+
+        self._train_batch_compute_times.append(t1 - t0)
 
         log_dict = {"train_loss": batch_loss}
         self.log_dict(
@@ -360,7 +394,7 @@ class ARModel(pl.LightningModule):
         """
         Run validation on single batch
         """
-        prediction, target, pred_std, _ = self.common_step(batch)
+        prediction, target, pred_std, batch_times  = self.common_step(batch)
 
         time_step_loss = torch.mean(
             self.loss(
@@ -395,12 +429,65 @@ class ARModel(pl.LightningModule):
         )  # (B, pred_steps, d_f)
         self.val_metrics["mse"].append(entry_mses)
 
+        should_store = (
+            self.trainer.is_global_zero
+            and batch_idx == 0
+            and (
+                self.current_epoch % self._val_vis_every_n_epochs == 0
+                or self.current_epoch == 0
+            )
+        )
+
+        if should_store and self._val_vis_prediction is None:
+            # First sample in batch, first feature only
+            self._val_vis_prediction = prediction[2, :, :, 0].detach().cpu().numpy()  # (T, N)
+            self._val_vis_target = target[2, :, :, 0].detach().cpu().numpy()          # (T, N)
+
+            if isinstance(batch_times, torch.Tensor):
+                self._val_vis_time = batch_times[2].detach().cpu().numpy()
+            else:
+                self._val_vis_time = np.asarray(batch_times[2])
+
     def on_validation_epoch_end(self):
         """
         Compute val metrics at the end of val epoch
         """
         # Create error maps for all test metrics
         self.aggregate_and_plot_metrics(self.val_metrics, prefix="val")
+
+        # Log static prediction snapshots to W&B
+        should_visualize = (
+            self.trainer.is_global_zero
+            and self._val_vis_prediction is not None
+            and self._val_vis_target is not None
+            and self._val_vis_time is not None
+            and (
+                self.current_epoch % self._val_vis_every_n_epochs == 0
+                or self.current_epoch == 0
+            )
+        )
+
+        if should_visualize:
+            figs = self._plot_prediction_snapshots(
+                self._val_vis_prediction,
+                self._val_vis_target,
+                self._val_vis_time,
+            )
+
+            if hasattr(self.logger, "log_image"):
+                labels = [1,5,10]
+                for i, fig in enumerate(figs):
+                    self.logger.log_image(
+                        key=f"val_prediction_snapshots/epoch_{self.current_epoch}_rollout_{labels[i]}",
+                        images=[fig],
+                    )
+
+            plt.close("all")
+
+        # Clear stored example
+        self._val_vis_prediction = None
+        self._val_vis_target = None
+        self._val_vis_time = None
 
         if self.trainer.is_global_zero:
             if getattr(self.args, "metrics_watch", None):
@@ -960,6 +1047,158 @@ class ARModel(pl.LightningModule):
 
         self.matched_metrics = set()
         self.spatial_loss_maps.clear()
+
+    def _plot_prediction_snapshots(self, pred_np, target_np, time_np, steps_to_plot=None):
+        """
+        Create static 3D plots of prediction / target / error for selected rollout steps.
+
+        Parameters
+        ----------
+        pred_np : np.ndarray
+            Shape (T, N)
+        target_np : np.ndarray
+            Shape (T, N)
+        time_np : np.ndarray
+            Shape (T,)
+        steps_to_plot : list[int] or None
+
+        Returns
+        -------
+        list[matplotlib.figure.Figure]
+        """
+        ds_src = xr.open_dataset(r"./data/nc_files/start_up_tests/wave_ensemble_10_coarse.nc")
+
+        P = ds_src["P"].values
+        tri = ds_src["tri"].values
+        R = float(ds_src.attrs["R"])
+
+        # Make sure P is (N, 3)
+        if P.shape[0] == 3 and P.shape[1] != 3:
+            P_plot = P.T
+        else:
+            P_plot = P
+
+        if steps_to_plot is None:
+            T = pred_np.shape[0]
+            steps_to_plot = sorted(set([
+                0,
+                min(4, T - 1),
+                min(9, T - 1),
+                T - 1,
+            ]))
+
+        vmin = float(np.nanmin([pred_np.min(), target_np.min()]))
+        vmax = float(np.nanmax([pred_np.max(), target_np.max()]))
+        err_abs = float(np.nanmax(np.abs(pred_np - target_np)))
+
+        figs = []
+
+        for step in steps_to_plot:
+            pred_field = pred_np[step]
+            target_field = target_np[step]
+            err_field = pred_field - target_field
+
+            fig = plt.figure(figsize=(15, 4))
+
+            fields = [
+                ("Prediction", pred_field, vmin, vmax, "viridis"),
+                ("Target", target_field, vmin, vmax, "viridis"),
+                ("Error", err_field, -err_abs, err_abs, "coolwarm"),
+            ]
+
+            for i, (title, field, lo, hi, cmap_name) in enumerate(fields, start=1):
+                ax = fig.add_subplot(1, 3, i, projection="3d")
+
+                tri_idx = np.asarray(tri, dtype=int)
+                tri_vertices = P_plot[tri_idx]
+
+                poly = Poly3DCollection(
+                    tri_vertices,
+                    edgecolor="k",
+                    linewidths=0.1,
+                    alpha=0.95,
+                )
+
+                face_vals = field[tri_idx].mean(axis=1)
+                norm = colors.Normalize(vmin=lo, vmax=hi)
+                cmap = plt.get_cmap(cmap_name)
+                poly.set_facecolor(cmap(norm(face_vals)))
+                ax.add_collection3d(poly)
+
+                ax.set_xlim(-R, R)
+                ax.set_ylim(-R, R)
+                ax.set_zlim(-R, R)
+                ax.set_box_aspect([1, 1, 1])
+                ax.set_title(f"{title}\nt={float(time_np[step]):.4f}")
+
+                sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+                sm.set_array([])
+                fig.colorbar(sm, ax=ax, shrink=0.7, pad=0.05)
+
+            fig.tight_layout()
+            figs.append(fig)
+
+        return figs
+
+    def on_train_epoch_start(self):
+        self._epoch_start_time = time.perf_counter()
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        self._prev_batch_end_time = time.perf_counter()
+
+        if batch_idx > 0 and batch_idx % 50 == 0 and self.trainer.is_global_zero:
+            avg_gap = (
+                sum(self._train_interbatch_gap_times[-50:]) / min(len(self._train_interbatch_gap_times), 50)
+                if self._train_interbatch_gap_times 
+                else 0.0
+            )
+            avg_compute = (
+                sum(self._train_batch_compute_times[-50:]) / min(len(self._train_batch_compute_times), 50)
+                if self._train_batch_compute_times
+                else 0.0
+            )
+
+            print(
+                f"[train batch {batch_idx}] "
+                f"avg inter-batch gap={avg_gap:.4f}s, "
+                f"avg compute={avg_compute:.4f}s"
+            )
+
+    def on_train_epoch_end(self):
+        if not self.trainer.is_global_zero:
+            return
+
+        if self._epoch_start_time is not None:
+            epoch_time = time.perf_counter() - self._epoch_start_time
+        else:
+            epoch_time = 0.0
+
+        avg_gap = (
+            sum(self._train_interbatch_gap_times ) / len(self._train_interbatch_gap_times )
+            if self._train_interbatch_gap_times 
+            else 0.0
+        )
+        avg_compute = (
+            sum(self._train_batch_compute_times) / len(self._train_batch_compute_times)
+            if self._train_batch_compute_times
+            else 0.0
+        )
+
+        print(
+            f"[epoch {self.current_epoch}] "
+            f"epoch_time={epoch_time:.2f}s, "
+            f"inter-batch gap={avg_gap:.4f}s, "
+            f"compute={avg_compute:.4f}s"
+        )
+
+        self.log("timing/epoch_time", epoch_time, on_epoch=True)
+        self.log("timing/train_interbatch_gap", avg_gap, prog_bar=False, on_epoch=True)
+        self.log("timing/train_batch_compute", avg_compute, prog_bar=False, on_epoch=True)
+
+        self._train_interbatch_gap_times.clear()
+        self._train_batch_compute_times.clear()
+        self._prev_batch_end_time = None
+        self._epoch_start_time = None
 
     def on_load_checkpoint(self, checkpoint):
         """
