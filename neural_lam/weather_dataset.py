@@ -55,6 +55,7 @@ class WeatherDataset(torch.utils.data.Dataset):
         num_future_forcing_steps: int = 1,
         load_single_member: bool = False,
         standardize: bool = True,
+        precompute_in_memory: bool = False,
     ):
         super().__init__()
 
@@ -64,6 +65,11 @@ class WeatherDataset(torch.utils.data.Dataset):
         self.num_past_forcing_steps = num_past_forcing_steps
         self.num_future_forcing_steps = num_future_forcing_steps
         self.load_single_member = load_single_member
+        self.precompute_in_memory = precompute_in_memory
+        self.init_states_np = None
+        self.target_states_np = None
+        self.target_times_np = None
+        self.forcing_np = None
 
         self.da_state = self.datastore.get_dataarray(
             category="state", split=self.split
@@ -92,10 +98,10 @@ class WeatherDataset(torch.utils.data.Dataset):
                 "The provided datastore only provides "
                 f"{len(self.da_state.time)} total time steps, which is too few "
                 "to create a single sample for the WeatherDataset "
-                f"configuration used in the `{split}` split. You could try "
+                f"configuration used in the {split} split. You could try "
                 "either reducing the number of autoregressive steps "
-                "(`ar_steps`) and/or the forcing window size "
-                "(`num_past_forcing_steps` and `num_future_forcing_steps`)"
+                "(ar_steps) and/or the forcing window size "
+                "(num_past_forcing_steps and num_future_forcing_steps)"
             )
 
         # Check the dimensions and their ordering
@@ -110,10 +116,10 @@ class WeatherDataset(torch.utils.data.Dataset):
                 )
                 if da.dims != expected_dim_order:
                     raise ValueError(
-                        f"The dimension order of the `{part}` data ({da.dims}) "
+                        f"The dimension order of the {part} data ({da.dims}) "
                         f"does not match the expected dimension order "
                         f"({expected_dim_order}). Maybe you forgot to "
-                        "transpose the data in `BaseDatastore.get_dataarray`?"
+                        "transpose the data in BaseDatastore.get_dataarray?"
                     )
 
         # Set up for standardization
@@ -150,6 +156,125 @@ class WeatherDataset(torch.utils.data.Dataset):
             else:
                 self.forcing_std_safe = None
 
+        if self.precompute_in_memory:
+            self._precompute_samples()
+
+    def _precompute_samples(self):
+        """Load full split into memory and precompute all overlapping samples."""
+        logger.info(f"Precomputing {self.split} samples in memory")
+
+        # Load full split once
+        da_state = self.da_state.load()
+
+        if self.da_forcing is not None:
+            da_forcing = self.da_forcing.load()
+        else:
+            da_forcing = None
+
+        # Standardize full arrays once
+        if self.standardize:
+            da_state = (da_state - self.da_state_mean) / self.state_std_safe
+            if da_forcing is not None:
+                da_forcing = (
+                    da_forcing - self.da_forcing_mean
+                ) / self.forcing_std_safe
+
+        # We only handle analysis data here
+        if self.datastore.is_forecast:
+            raise NotImplementedError(
+                "precompute_in_memory currently only supports analysis data"
+            )
+
+        init_steps = 2
+        time_len = da_state.sizes["time"]
+        n_ens = (
+            da_state.sizes["ensemble_member"]
+            if self.datastore.is_ensemble
+            else 1
+        )
+
+        base_len = (
+            time_len
+            - self.ar_steps
+            - max(2, self.num_past_forcing_steps)
+            - self.num_future_forcing_steps
+        )
+
+        init_states_list = []
+        target_states_list = []
+        target_times_list = []
+        forcing_list = []
+
+        for i_ens in range(n_ens):
+            if self.datastore.is_ensemble:
+                da_state_ens = da_state.isel(ensemble_member=i_ens)
+                if da_forcing is not None and self.datastore.has_ensemble_forcing:
+                    da_forcing_ens = da_forcing.isel(ensemble_member=i_ens)
+                else:
+                    da_forcing_ens = da_forcing
+            else:
+                da_state_ens = da_state
+                da_forcing_ens = da_forcing
+
+            for sample_idx in range(base_len):
+                # Same slicing logic as before
+                start_idx = sample_idx + max(
+                    0, self.num_past_forcing_steps - init_steps
+                )
+                end_idx = (
+                    sample_idx
+                    + max(init_steps, self.num_past_forcing_steps)
+                    + self.ar_steps
+                )
+
+                da_state_sliced = da_state_ens.isel(
+                    time=slice(start_idx, end_idx)
+                )
+
+                da_init_states = da_state_sliced.isel(time=slice(0, 2))
+                da_target_states = da_state_sliced.isel(time=slice(2, None))
+                da_target_times = da_target_states.time
+
+                init_states_list.append(da_init_states.values)
+                target_states_list.append(da_target_states.values)
+                target_times_list.append(da_target_times.values)
+
+                if da_forcing_ens is not None:
+                    da_forcing_windowed = self._slice_forcing_time(
+                        da_forcing=da_forcing_ens,
+                        idx=sample_idx,
+                        n_steps=self.ar_steps,
+                    )
+
+                    da_forcing_windowed = da_forcing_windowed.stack(
+                        forcing_feature_windowed=("forcing_feature", "window")
+                    )
+                    forcing_list.append(da_forcing_windowed.values)
+                else:
+                    forcing_list.append(
+                        np.empty(
+                            (
+                                self.ar_steps,
+                                da_state_sliced.grid_index.size,
+                                0,
+                            ),
+                            dtype=np.float32,
+                        )
+                    )
+
+        self.init_states_np = np.asarray(init_states_list, dtype=np.float32)
+        self.target_states_np = np.asarray(target_states_list, dtype=np.float32)
+        self.forcing_np = np.asarray(forcing_list, dtype=np.float32)
+        self.target_times_np = np.asarray(target_times_list)
+
+        logger.info(
+            f"Precomputed arrays: "
+            f"init={self.init_states_np.shape}, "
+            f"target={self.target_states_np.shape}, "
+            f"forcing={self.forcing_np.shape}, "
+            f"times={self.target_times_np.shape}"
+        )
+
     def _compute_std_safe(self, std: xr.DataArray, feature: str):
         eps = np.finfo(std.dtype).eps
         if bool((std <= eps).any()):
@@ -160,6 +285,9 @@ class WeatherDataset(torch.utils.data.Dataset):
         return std.where(std > eps, other=eps)
 
     def __len__(self):
+        if self.precompute_in_memory and self.init_states_np is not None:
+            return self.init_states_np.shape[0]
+
         if self.datastore.is_forecast:
             # for now we simply create a single sample for each analysis time
             # and then take the first (2 + ar_steps) forecast times.
@@ -502,6 +630,26 @@ class WeatherDataset(torch.utils.data.Dataset):
             the target steps.
 
         """
+        if self.precompute_in_memory and self.init_states_np is not None:
+            init_states = torch.tensor(
+                self.init_states_np[idx], dtype=torch.float32
+            )
+            target_states = torch.tensor(
+                self.target_states_np[idx], dtype=torch.float32
+            )
+            forcing = torch.tensor(self.forcing_np[idx], dtype=torch.float32)
+
+            times_np = self.target_times_np[idx]
+            if np.issubdtype(times_np.dtype, np.datetime64):
+                target_times = torch.tensor(
+                    times_np.astype("datetime64[ns]").astype("int64"),
+                    dtype=torch.int64,
+                )
+            else:
+                target_times = torch.tensor(times_np, dtype=torch.float64)
+
+            return init_states, target_states, forcing, target_times
+
         (
             da_init_states,
             da_target_states,
@@ -656,6 +804,7 @@ class WeatherDataModule(pl.LightningDataModule):
         batch_size: int = 4,
         num_workers: int = 16,
         eval_split: str = "test",
+        precompute_in_memory: bool = False,
     ):
         super().__init__()
         self._datastore = datastore
@@ -676,6 +825,7 @@ class WeatherDataModule(pl.LightningDataModule):
             # default to spawn for now, as the default on linux "fork" hangs
             # when using dask (which the npyfilesmeps datastore uses)
             self.multiprocessing_context = "spawn"
+        self.precompute_in_memory = precompute_in_memory
 
     def setup(self, stage=None):
         if stage == "fit" or stage is None:
@@ -687,6 +837,7 @@ class WeatherDataModule(pl.LightningDataModule):
                 num_past_forcing_steps=self.num_past_forcing_steps,
                 num_future_forcing_steps=self.num_future_forcing_steps,
                 load_single_member=self.load_single_member,
+                precompute_in_memory=self.precompute_in_memory,
             )
             self.val_dataset = WeatherDataset(
                 datastore=self._datastore,
@@ -696,6 +847,7 @@ class WeatherDataModule(pl.LightningDataModule):
                 num_past_forcing_steps=self.num_past_forcing_steps,
                 num_future_forcing_steps=self.num_future_forcing_steps,
                 load_single_member=self.load_single_member,
+                precompute_in_memory=self.precompute_in_memory,
             )
 
         if stage == "test" or stage is None:
@@ -707,6 +859,7 @@ class WeatherDataModule(pl.LightningDataModule):
                 num_past_forcing_steps=self.num_past_forcing_steps,
                 num_future_forcing_steps=self.num_future_forcing_steps,
                 load_single_member=self.load_single_member,
+                precompute_in_memory=self.precompute_in_memory,
             )
 
     def train_dataloader(self):

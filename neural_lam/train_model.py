@@ -256,6 +256,18 @@ def main(input_args=None):
             "ensemble members as independent samples."
         ),
     )
+
+    parser.add_argument(
+        "--precompute_in_memory",
+        type = bool,
+        default=False,
+        help=(
+            "If set, precompute all samples in the dataset and store in memory. "
+            "This can speed up training if the dataset is small enough to fit in "
+            "memory, but will increase memory usage and startup time."
+        ),
+    )
+
     args = parser.parse_args(input_args)
     args.var_leads_metrics_watch = {
         int(k): v for k, v in json.loads(args.var_leads_metrics_watch).items()
@@ -307,6 +319,7 @@ def main(input_args=None):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         eval_split=args.eval or "test",
+        precompute_in_memory=args.precompute_in_memory
     )
 
     # Instantiate model + trainer
