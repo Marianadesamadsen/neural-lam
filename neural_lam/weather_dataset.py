@@ -159,7 +159,7 @@ class WeatherDataset(torch.utils.data.Dataset):
         if self.precompute_in_memory:
             self._precompute_samples()
 
-    def _precompute_samples(self):
+    def _precompute_samples_old(self):
         """Load full split into memory and precompute all overlapping samples."""
         logger.info(f"Precomputing {self.split} samples in memory")
 
@@ -274,6 +274,123 @@ class WeatherDataset(torch.utils.data.Dataset):
             f"forcing={self.forcing_np.shape}, "
             f"times={self.target_times_np.shape}"
         )
+        
+    def _precompute_samples(self):
+        """Load full split into memory and precompute all overlapping samples."""
+        logger.info(f"Precomputing {self.split} samples in memory")
+
+        # Load full split once
+        da_state = self.da_state.load()
+
+        if self.da_forcing is not None:
+            da_forcing = self.da_forcing.load()
+        else:
+            da_forcing = None
+
+        # Standardize full arrays once
+        if self.standardize:
+            da_state = (da_state - self.da_state_mean) / self.state_std_safe
+            if da_forcing is not None:
+                da_forcing = (
+                    da_forcing - self.da_forcing_mean
+                ) / self.forcing_std_safe
+
+        # Only analysis data supported
+        if self.datastore.is_forecast:
+            raise NotImplementedError(
+                "precompute_in_memory currently only supports analysis data"
+            )
+
+        init_steps = 2
+        time_len = da_state.sizes["time"]
+        n_ens = (
+            da_state.sizes["ensemble_member"]
+            if self.datastore.is_ensemble
+            else 1
+        )
+
+        base_len = (
+            time_len
+            - self.ar_steps
+            - max(2, self.num_past_forcing_steps)
+            - self.num_future_forcing_steps
+        )
+
+        past_offset = max(0, self.num_past_forcing_steps - init_steps)
+        init_total_offset = max(init_steps, self.num_past_forcing_steps)
+
+        init_states_list = []
+        target_states_list = []
+        target_times_list = []
+        forcing_list = []
+
+        for i_ens in range(n_ens):
+            if self.datastore.is_ensemble:
+                da_state_ens = da_state.isel(ensemble_member=i_ens)
+
+                if da_forcing is not None and self.datastore.has_ensemble_forcing:
+                    da_forcing_ens = da_forcing.isel(ensemble_member=i_ens)
+                else:
+                    da_forcing_ens = da_forcing
+            else:
+                da_state_ens = da_state
+                da_forcing_ens = da_forcing
+
+            # Convert state once per ensemble member
+            state_np = da_state_ens.values.astype(np.float32)
+            time_np = da_state_ens.time.values
+
+            grid_size = da_state_ens.sizes["grid_index"]
+
+            for sample_idx in range(base_len):
+                start_idx = sample_idx + past_offset
+                end_idx = sample_idx + init_total_offset + self.ar_steps
+
+                state_window = state_np[start_idx:end_idx]
+
+                init_states_list.append(state_window[:2])
+                target_states_list.append(state_window[2:])
+                target_times_list.append(time_np[start_idx + 2 : end_idx])
+
+                if da_forcing_ens is not None:
+                    da_forcing_windowed = self._slice_forcing_time(
+                        da_forcing=da_forcing_ens,
+                        idx=sample_idx,
+                        n_steps=self.ar_steps,
+                    )
+
+                    da_forcing_windowed = da_forcing_windowed.stack(
+                        forcing_feature_windowed=("forcing_feature", "window")
+                    )
+
+                    forcing_list.append(
+                        da_forcing_windowed.values.astype(np.float32)
+                    )
+                else:
+                    forcing_list.append(
+                        np.empty(
+                            (
+                                self.ar_steps,
+                                grid_size,
+                                0,
+                            ),
+                            dtype=np.float32,
+                        )
+                    )
+
+        self.init_states_np = np.stack(init_states_list).astype(np.float32)
+        self.target_states_np = np.stack(target_states_list).astype(np.float32)
+        self.forcing_np = np.stack(forcing_list).astype(np.float32)
+        self.target_times_np = np.asarray(target_times_list)
+
+        logger.info(
+            f"Precomputed arrays: "
+            f"init={self.init_states_np.shape}, "
+            f"target={self.target_states_np.shape}, "
+            f"forcing={self.forcing_np.shape}, "
+            f"times={self.target_times_np.shape}"
+        )
+
 
     def _compute_std_safe(self, std: xr.DataArray, feature: str):
         eps = np.finfo(std.dtype).eps
