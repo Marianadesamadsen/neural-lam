@@ -1066,7 +1066,11 @@ class ARModel(pl.LightningModule):
         -------
         list[matplotlib.figure.Figure]
         """
-        ds_src = xr.open_dataset(r"./data/nc_files/start_up_tests/wave_ensemble_10_coarse.nc")
+
+        inputs = getattr(self._datastore._config, "inputs", {})
+        wave_path = inputs.get("wave_sphere").path
+
+        ds_src = xr.open_dataset(wave_path)
 
         P = ds_src["P"].values
         tri = ds_src["tri"].values
