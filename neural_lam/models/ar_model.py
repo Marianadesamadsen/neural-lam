@@ -28,6 +28,8 @@ import time
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from matplotlib import colors
 
+#from integrate_sphere.compute_energy import compute_energy_over_time
+
 class ARModel(pl.LightningModule):
     """
     Generic auto-regressive weather model.
@@ -480,11 +482,47 @@ class ARModel(pl.LightningModule):
                 labels = steps_to_plot
                 for i, fig in enumerate(figs):
                     self.logger.log_image(
-                        key=f"val_prediction_snapshots/epoch_{self.current_epoch}_rollout_{int(labels[i]+1)}",
+                        key=f"val_prediction_snapshots/epoch_{self.current_epoch}_rollout_{int(labels[i])}",
                         images=[fig],
                     )
 
             plt.close("all")
+
+            # # Convert prediction/target back to physical scale
+            # pred_phys = (
+            #     self._val_vis_prediction * self.state_std[0].detach().cpu().numpy()
+            #     + self.state_mean[0].detach().cpu().numpy()
+            # )
+
+            # target_phys = (
+            #     self._val_vis_target * self.state_std[0].detach().cpu().numpy()
+            #     + self.state_mean[0].detach().cpu().numpy()
+            # )
+
+            # E_pred = compute_energy_over_time(
+            #     pred_phys, generation=4, R=1, c=1, N=6, dt=1
+            # )
+
+            # E_target = compute_energy_over_time(
+            #     target_phys, generation=4, R=1, c=1, N=6, dt=1
+            # )
+
+            # energy_log_dict = {}
+
+            # for i, (Ep, Et) in enumerate(zip(E_pred, E_target), start=1):
+            #     rollout_step = i + 1
+
+            #     energy_log_dict[f"val_energy_pred_unroll{rollout_step}"] = Ep
+            #     energy_log_dict[f"val_energy_target_unroll{rollout_step}"] = Et
+            #     energy_log_dict[f"val_energy_abs_error_unroll{rollout_step}"] = abs(Ep - Et)
+            #     energy_log_dict[f"val_energy_rel_error_unroll{rollout_step}"] = abs(Ep - Et) / (abs(Et) + 1e-12)
+
+            # self.log_dict(
+            #     energy_log_dict,
+            #     on_step=False,
+            #     on_epoch=True,
+            #     sync_dist=True,
+            # )
 
         # Clear stored example
         self._val_vis_prediction = None

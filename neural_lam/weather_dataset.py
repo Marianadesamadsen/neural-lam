@@ -187,11 +187,11 @@ class WeatherDataset(torch.utils.data.Dataset):
 
         init_steps = 2
         time_len = da_state.sizes["time"]
-        n_ens = (
-            da_state.sizes["ensemble_member"]
-            if self.datastore.is_ensemble
-            else 1
-        )
+
+        if self.datastore.is_ensemble and not self.load_single_member:
+            n_ens = da_state.sizes["ensemble_member"]
+        else:
+            n_ens = 1
 
         base_len = (
             time_len
@@ -203,10 +203,11 @@ class WeatherDataset(torch.utils.data.Dataset):
         past_offset = max(0, self.num_past_forcing_steps - init_steps)
         init_total_offset = max(init_steps, self.num_past_forcing_steps)
 
-        init_states_list = []
-        target_states_list = []
-        target_times_list = []
-        forcing_list = []
+        # Pre-convert state once per ensemble member for speed
+        state_np_list = []
+        time_np_list = []
+        grid_size_list = []
+        forcing_da_list = []
 
         for i_ens in range(n_ens):
             if self.datastore.is_ensemble:
@@ -220,13 +221,26 @@ class WeatherDataset(torch.utils.data.Dataset):
                 da_state_ens = da_state
                 da_forcing_ens = da_forcing
 
-            # Convert state once per ensemble member
-            state_np = da_state_ens.values.astype(np.float32)
-            time_np = da_state_ens.time.values
+            state_np_list.append(da_state_ens.values.astype(np.float32))
+            time_np_list.append(da_state_ens.time.values)
+            grid_size_list.append(da_state_ens.sizes["grid_index"])
+            forcing_da_list.append(da_forcing_ens)
 
-            grid_size = da_state_ens.sizes["grid_index"]
+        init_states_list = []
+        target_states_list = []
+        target_times_list = []
+        forcing_list = []
 
-            for sample_idx in range(base_len):
+        # IMPORTANT:
+        # This ordering matches __getitem__:
+        # sample_idx, i_ensemble = divmod(idx, n_ensemble_members)
+        for sample_idx in range(base_len):
+            for i_ens in range(n_ens):
+                state_np = state_np_list[i_ens]
+                time_np = time_np_list[i_ens]
+                grid_size = grid_size_list[i_ens]
+                da_forcing_ens = forcing_da_list[i_ens]
+
                 start_idx = sample_idx + past_offset
                 end_idx = sample_idx + init_total_offset + self.ar_steps
 
