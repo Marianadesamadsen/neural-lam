@@ -452,6 +452,48 @@ class ARModel(pl.LightningModule):
             else:
                 self._val_vis_time = np.asarray(batch_times[2])
 
+    def plot_energy_heatmap(self, E_pred, E_target, rollout_start=1):
+        """
+        Plot energy heatmap with rows:
+        target energy, predicted energy, absolute error.
+        """
+
+        E_pred = np.asarray(E_pred)
+        E_target = np.asarray(E_target)
+
+        E_abs_error = np.abs(E_pred - E_target)
+
+        heatmap = np.vstack([
+            E_target,
+            E_pred,
+            E_abs_error,
+        ])
+
+        n_steps = len(E_pred)
+        rollout_indices = np.arange(rollout_start, rollout_start + n_steps)
+
+        fig, ax = plt.subplots(figsize=(10, 3))
+
+        im = ax.imshow(
+            heatmap,
+            aspect="auto",
+            interpolation="nearest",
+        )
+
+        ax.set_yticks([0, 1, 2])
+        ax.set_yticklabels(["target", "pred", "abs error"])
+
+        ax.set_xticks(np.arange(n_steps))
+        ax.set_xticklabels(rollout_indices)
+
+        ax.set_xlabel("AR rollout index")
+        ax.set_title("Validation energy over rollout")
+
+        fig.colorbar(im, ax=ax, label="Energy / error")
+        fig.tight_layout()
+
+        return fig
+    
     def on_validation_epoch_end(self):
         """
         Compute val metrics at the end of val epoch
@@ -509,21 +551,36 @@ class ARModel(pl.LightningModule):
                 target_phys, generation=4, R=1, c=1, N=6, dt=1
             )
 
-            energy_log_dict = {}
+            fig = self.plot_energy_heatmap(
+                E_pred,
+                E_target,
+                rollout_start=1,   # change to 2 if your first prediction corresponds to t+2
+            )
 
-            for i, (Ep, Et) in enumerate(zip(E_pred, E_target), start=1):
-                rollout_step = i + 1
 
-                energy_log_dict[f"val_energy_pred_unroll{rollout_step}"] = Ep
-                energy_log_dict[f"val_energy_target_unroll{rollout_step}"] = Et
-                energy_log_dict[f"val_energy_abs_error_unroll{rollout_step}"] = abs(Ep - Et)
-                energy_log_dict[f"val_energy_rel_error_unroll{rollout_step}"] = abs(Ep - Et) / (abs(Et) + 1e-12)
+            if hasattr(self.logger, "log_image"):
+                self.logger.log_image(
+                    key="val_energy_heatmap",
+                    images=[fig],
+                    step=self.global_step,
+                )
+
+            plt.close(fig)
+
+            E_pred = np.asarray(E_pred)
+            E_target = np.asarray(E_target)
+
+            energy_abs_error = np.abs(E_pred - E_target)
+
+            mean_energy_abs_error = float(np.mean(energy_abs_error))
 
             self.log_dict(
-                energy_log_dict,
-                on_step=False,
-                on_epoch=True,
-                sync_dist=True,
+            {
+                "val_mean_energy_abs_error": mean_energy_abs_error,
+            },
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
             )
 
         # Clear stored example
