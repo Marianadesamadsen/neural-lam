@@ -475,10 +475,12 @@ class ARModel(pl.LightningModule):
             )
 
             if hasattr(self.logger, "log_image"):
-                labels = [1,5,10]
+                steps_to_plot = self.args.val_steps_to_log 
+                steps_to_plot = steps_to_plot-np.ones(len(steps_to_plot))
+                labels = steps_to_plot
                 for i, fig in enumerate(figs):
                     self.logger.log_image(
-                        key=f"val_prediction_snapshots/epoch_{self.current_epoch}_rollout_{labels[i]}",
+                        key=f"val_prediction_snapshots/epoch_{self.current_epoch}_rollout_{int(labels[i]+1)}",
                         images=[fig],
                     )
 
@@ -1083,13 +1085,8 @@ class ARModel(pl.LightningModule):
             P_plot = P
 
         if steps_to_plot is None:
-            T = pred_np.shape[0]
-            steps_to_plot = sorted(set([
-                0,
-                min(4, T - 1),
-                min(9, T - 1),
-                T - 1,
-            ]))
+            steps_to_plot = self.args.val_steps_to_log 
+            steps_to_plot = steps_to_plot-np.ones(len(steps_to_plot))
 
         vmin = float(np.nanmin([pred_np.min(), target_np.min()]))
         vmax = float(np.nanmax([pred_np.max(), target_np.max()]))
@@ -1097,7 +1094,8 @@ class ARModel(pl.LightningModule):
 
         figs = []
 
-        for step in steps_to_plot:
+        for stepi in steps_to_plot:
+            step = int(stepi)
             pred_field = pred_np[step]
             target_field = target_np[step]
             err_field = pred_field - target_field
