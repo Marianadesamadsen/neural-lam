@@ -182,6 +182,12 @@ class ARModel(pl.LightningModule):
 
         self.matched_metrics: set[str] = set()
 
+        self.val_energy_metrics = {
+            "target": [],
+            "pred": [],
+            "abs_error": [],
+        }
+
         self._train_interbatch_gap_times  = []
         self._train_batch_compute_times = []
         self._epoch_start_time = None
@@ -405,6 +411,53 @@ class ARModel(pl.LightningModule):
         """
         prediction, target, pred_std, batch_times  = self.common_step(batch)
 
+        is_energy_epoch = (
+            self.current_epoch % self._val_vis_every_n_epochs == 0
+            or self.current_epoch == 0
+        )
+
+        if is_energy_epoch:
+            # Convert first state variable back to physical scale
+            pred_phys_batch = (
+                prediction[:, :, :, 0].detach().cpu().numpy()
+                * self.state_std[0].detach().cpu().numpy()
+                + self.state_mean[0].detach().cpu().numpy()
+            )
+
+            target_phys_batch = (
+                target[:, :, :, 0].detach().cpu().numpy()
+                * self.state_std[0].detach().cpu().numpy()
+                + self.state_mean[0].detach().cpu().numpy()
+            )
+
+            E_pred_batch = compute_energy_over_time(
+                pred_phys_batch,
+                generation=4,
+                R=1,
+                c=1,
+                N=6,
+                dt=1,
+                out=self.energy_out,
+            )
+
+            E_target_batch = compute_energy_over_time(
+                target_phys_batch,
+                generation=4,
+                R=1,
+                c=1,
+                N=6,
+                dt=1,
+                out=self.energy_out,
+            )
+
+            E_abs_error_batch = np.abs(E_pred_batch - E_target_batch)
+
+            self.val_energy_metrics["pred"].append(torch.tensor(E_pred_batch, device=self.device, dtype=torch.float32))
+            self.val_energy_metrics["target"].append(torch.tensor(E_target_batch, device=self.device, dtype=torch.float32))
+            self.val_energy_metrics["abs_error"].append(torch.tensor(E_abs_error_batch, device=self.device, dtype=torch.float32))
+
+            ## End energy
+
         time_step_loss = torch.mean(
             self.loss(
                 prediction, target, pred_std, mask=self.interior_mask_bool
@@ -466,33 +519,85 @@ class ARModel(pl.LightningModule):
             else:
                 self._val_vis_time = np.asarray(batch_times[sample_idx])
 
-    
-    def plot_energy_trajectory(self, E_pred, E_target, rollout_start=1):
-        E_pred = np.asarray(E_pred)
-        E_target = np.asarray(E_target)
-        E_abs_error = np.abs(E_pred - E_target)
+    def plot_energy_error_map(self, energy_tensor, title, cbar_label):
+        """
+        energy_tensor shape: (num_val_trajectories, rollout_steps)
+        """
 
-        rollout = np.arange(rollout_start, rollout_start + len(E_pred))
+        energy_np = energy_tensor.detach().cpu().numpy()
 
-        fig, axes = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
+        fig, ax = plt.subplots(figsize=(8, 5))
 
-        axes[0].plot(rollout, E_target)
-        axes[0].set_title("Target energy")
-        axes[0].set_ylabel("Energy")
+        im = ax.imshow(
+            energy_np,
+            aspect="auto",
+            interpolation="nearest",
+        )
 
-        axes[1].plot(rollout, E_pred)
-        axes[1].set_title("Predicted energy")
-        axes[1].set_ylabel("Energy")
+        ax.set_xlabel("Rollout step")
+        ax.set_ylabel("Validation trajectory index")
+        ax.set_title(title)
 
-        axes[2].plot(rollout, E_abs_error)
-        axes[2].set_title("Absolute energy error")
-        axes[2].set_ylabel("|Error|")
-        axes[2].set_xlabel("AR rollout index")
+        n_steps = energy_np.shape[1]
+        ax.set_xticks(np.arange(n_steps))
+        ax.set_xticklabels(np.arange(1, n_steps + 1))
 
-        fig.suptitle("Validation energy for one trajectory")
+        fig.colorbar(im, ax=ax, label=cbar_label)
         fig.tight_layout()
 
         return fig
+    
+    def aggregate_and_plot_energy_metrics(self):
+        """
+        Aggregate validation energy metrics and log:
+        - val_energy_target
+        - val_energy_pred
+        - val_energy_abs_error
+        """
+
+        if len(self.val_energy_metrics["target"]) == 0:
+            return
+
+        energy_target = self.all_gather_cat(
+            torch.cat(self.val_energy_metrics["target"], dim=0)
+        )
+        energy_pred = self.all_gather_cat(
+            torch.cat(self.val_energy_metrics["pred"], dim=0)
+        )
+        energy_abs_error = self.all_gather_cat(
+            torch.cat(self.val_energy_metrics["abs_error"], dim=0)
+        )
+
+        if not self.trainer.is_global_zero or self.trainer.sanity_checking:
+            return
+
+        figs = {
+            "val_energy_target": self.plot_energy_error_map(
+                energy_target,
+                title="Validation target energy",
+                cbar_label="Energy",
+            ),
+            "val_energy_pred": self.plot_energy_error_map(
+                energy_pred,
+                title="Validation predicted energy",
+                cbar_label="Energy",
+            ),
+            "val_energy_abs_error": self.plot_energy_error_map(
+                energy_abs_error,
+                title="Validation absolute energy error",
+                cbar_label="|Energy error|",
+            ),
+        }
+
+        for key, fig in figs.items():
+            if hasattr(self.logger, "log_image"):
+                self.logger.log_image(
+                    key=key,
+                    images=[fig],
+                    step=self.current_epoch,
+                )
+
+        plt.close("all")
 
     def plot_eigenvalues(self, eigvals):
         fig, ax = plt.subplots(figsize=(6, 6))
@@ -587,6 +692,8 @@ class ARModel(pl.LightningModule):
 
         # Create error maps for validation metrics
         self.aggregate_and_plot_metrics(self.val_metrics, prefix="val")
+        if is_plot_epoch:
+            self.aggregate_and_plot_energy_metrics()
 
         should_compute_eigs = False
         # should_compute_eigs = (
@@ -618,54 +725,6 @@ class ARModel(pl.LightningModule):
             if hasattr(self.logger, "log_image"):
                 self.logger.log_image(
                     key="val_eigenvalues",
-                    images=[fig],
-                    step=self.current_epoch,
-                )
-
-            plt.close(fig)
-
-        if should_visualize:
-            pred_phys = (
-                self._val_vis_prediction * self.state_std[0].detach().cpu().numpy()
-                + self.state_mean[0].detach().cpu().numpy()
-            )
-
-            target_phys = (
-                self._val_vis_target * self.state_std[0].detach().cpu().numpy()
-                + self.state_mean[0].detach().cpu().numpy()
-            )
-
-            dt = self.time_step_int
-
-            E_pred = compute_energy_over_time(
-                pred_phys,
-                generation=4,
-                R=1,
-                c=1,
-                N=6,
-                dt=dt,
-                out=self.energy_out,
-            )
-
-            E_target = compute_energy_over_time(
-                target_phys,
-                generation=4,
-                R=1,
-                c=1,
-                N=6,
-                dt=dt,
-                out=self.energy_out,
-            )
-
-            fig = self.plot_energy_trajectory(
-                E_pred,
-                E_target,
-                rollout_start=1,
-            )
-
-            if hasattr(self.logger, "log_image"):
-                self.logger.log_image(
-                    key="val_energy_trajectory",
                     images=[fig],
                     step=self.current_epoch,
                 )
@@ -714,6 +773,9 @@ class ARModel(pl.LightningModule):
 
         # Clear lists with validation metrics values
         for metric_list in self.val_metrics.values():
+            metric_list.clear()
+
+        for metric_list in self.val_energy_metrics.values():
             metric_list.clear()
 
     def _save_predictions_to_zarr(
