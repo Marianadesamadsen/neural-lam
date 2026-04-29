@@ -438,15 +438,6 @@ class ARModel(pl.LightningModule):
         )  # (B, pred_steps, d_f)
         self.val_metrics["mse"].append(entry_mses)
 
-        should_store_old = (
-            self.trainer.is_global_zero
-            and batch_idx == 0
-            and (
-                self.current_epoch % self._val_vis_every_n_epochs == 0
-                or self.current_epoch == 0
-            )
-        )
-
         should_store = (
             self.trainer.is_global_zero
             and batch_idx == 0
@@ -661,6 +652,27 @@ class ARModel(pl.LightningModule):
                 E_pred,
                 E_target,
                 rollout_start=1,
+            )
+
+            E_pred = np.asarray(E_pred)
+            E_target = np.asarray(E_target)
+            E_abs_error = np.abs(E_pred - E_target)
+
+            energy_log_dict = {}
+
+            for step in self.args.val_steps_to_log:
+                idx = step - 1
+
+                if idx < len(E_pred):
+                    energy_log_dict[f"val_energy_abs_error_rollout{step}"] = float(E_abs_error[idx])
+
+            energy_log_dict["val_mean_energy_abs_error"] = float(np.mean(E_abs_error))
+
+            self.log_dict(
+                energy_log_dict,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
             )
 
             if hasattr(self.logger, "log_image"):
