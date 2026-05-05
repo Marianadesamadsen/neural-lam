@@ -536,8 +536,7 @@ class ARModel(pl.LightningModule):
             )
 
             pred_next = pred_next.squeeze(0)
-
-            # Include boundary overwrite if your normal rollout uses it
+            
             new_state = torch.stack([x[1], pred_next], dim=0)
 
             return new_state.reshape(-1)
@@ -556,11 +555,6 @@ class ARModel(pl.LightningModule):
         return eigvals, J_np
     
     def on_validation_epoch_end(self):
-        """
-        Compute val metrics at the end of val epoch.
-        Energy scalar is logged every epoch.
-        Energy heatmap, prediction snapshots, and eigenvalues are logged every N epochs.
-        """
 
         has_val_example = (
             self.trainer.is_global_zero
@@ -580,12 +574,6 @@ class ARModel(pl.LightningModule):
         self.aggregate_and_plot_metrics(self.val_metrics, prefix="val")
 
         should_compute_eigs = False
-        # should_compute_eigs = (
-        #     has_val_example
-        #     and is_plot_epoch
-        #     and self._val_vis_init_states is not None
-        #     and self._val_vis_forcing is not None
-        # )
 
         # Eigenvalues: only every N epochs
         if should_compute_eigs:
