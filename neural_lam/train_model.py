@@ -377,7 +377,7 @@ def main(input_args=None):
         monitor="val_mean_loss",
         min_delta=1e-4,
         patience=10,
-        verbose=True,
+        verbose=True, 
         mode="min",
     )
 
