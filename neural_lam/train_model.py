@@ -390,7 +390,7 @@ def main(input_args=None):
         devices=devices,
         logger=training_logger,
         log_every_n_steps=1,
-        callbacks=[checkpoint_callback,early_stopping_callback],
+        callbacks=[checkpoint_callback], # Obs no early_stopping_callback
         check_val_every_n_epoch=args.val_interval,
         precision=args.precision,
     )
