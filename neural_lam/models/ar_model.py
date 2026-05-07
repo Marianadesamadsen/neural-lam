@@ -411,51 +411,57 @@ class ARModel(pl.LightningModule):
         """
         Run validation on single batch
         """
-        prediction, target, pred_std, batch_times  = self.common_step(batch)
+        init_states, target_states, forcing_features, batch_times = batch
 
-        is_energy_epoch = (
-            self.current_epoch % self._val_vis_every_n_epochs == 0
-            or self.current_epoch == 0
+        prediction, target, pred_std, batch_times = self.common_step(batch)
+
+        pred_full = torch.cat(
+            [
+                init_states[:, :, :, 0],      # t-1, t
+                prediction[:, :, :, 0],       # t+1, t+2, ...
+            ],
+            dim=1,
         )
 
-        if True: #is_energy_epoch:
-            # Convert first state variable back to physical scale
-            pred_phys_batch = (
-            prediction[:, :, :, 0] * self.state_std[0] + self.state_mean[0]
-            )
+        target_full = torch.cat(
+            [
+                init_states[:, :, :, 0],      # true t-1, t
+                target[:, :, :, 0],           # true t+1, t+2, ...
+            ],
+            dim=1,
+        )
 
-            target_phys_batch = (
-                target[:, :, :, 0] * self.state_std[0] + self.state_mean[0]
-            )
+        pred_phys_batch = pred_full * self.state_std[0] + self.state_mean[0]
+        target_phys_batch = target_full * self.state_std[0] + self.state_mean[0]
 
-            energy_out = self.get_energy_out_torch()
-            dt = self.time_step_int
-            ut_order = 4
+        energy_out = self.get_energy_out_torch()
+        dt = self.time_step_int
+        ut_order = 4
 
-            E_pred_batch = compute_energy_over_time_torch(
-                pred_phys_batch,
-                out=energy_out,
-                dt=dt,
-                c=1.0,
-                ut_order=ut_order,
-            )
+        E_pred_batch = compute_energy_over_time_torch(
+            pred_phys_batch,
+            out=energy_out,
+            dt=dt,
+            c=1.0,
+            ut_order=ut_order,
+        )
 
-            E_target_batch = compute_energy_over_time_torch(
-                target_phys_batch,
-                out=energy_out,
-                dt=dt,
-                c=1.0,
-                ut_order=ut_order,
-            )
+        E_target_batch = compute_energy_over_time_torch(
+            target_phys_batch,
+            out=energy_out,
+            dt=dt,
+            c=1.0,
+            ut_order=ut_order,
+        )
 
-            eps = 1e-12
-            E_abs_error_batch = torch.abs(E_pred_batch - E_target_batch)
-            E_rel_error_batch = E_abs_error_batch / (torch.abs(E_target_batch) + eps)
+        eps = 1e-12
+        E_abs_error_batch = torch.abs(E_pred_batch - E_target_batch)
+        E_rel_error_batch = E_abs_error_batch / (torch.abs(E_target_batch) + eps)
 
-            self.val_energy_metrics["pred"].append(E_pred_batch.detach())
-            self.val_energy_metrics["target"].append(E_target_batch.detach())
-            self.val_energy_metrics["abs_error"].append(E_abs_error_batch.detach())
-            self.val_energy_metrics["rel_error"].append(E_rel_error_batch.detach())
+        self.val_energy_metrics["pred"].append(E_pred_batch.detach())
+        self.val_energy_metrics["target"].append(E_target_batch.detach())
+        self.val_energy_metrics["abs_error"].append(E_abs_error_batch.detach())
+        self.val_energy_metrics["rel_error"].append(E_rel_error_batch.detach())
 
         ## End energy
 
@@ -551,7 +557,7 @@ class ARModel(pl.LightningModule):
 
         n_steps = energy_np.shape[1]
         ax.set_xticks(np.arange(n_steps))
-        ax.set_xticklabels(np.arange(1, n_steps + 1))
+        ax.set_xticklabels(np.arange(1 , n_steps + 1))
 
         fig.colorbar(im, ax=ax, label=cbar_label)
         fig.tight_layout()
@@ -718,7 +724,7 @@ class ARModel(pl.LightningModule):
         E_abs_mean, E_abs_std = mean_std(energy_abs_error)
         E_rel_mean, E_rel_std = mean_std(energy_rel_error)
 
-        steps = np.arange(1, len(E_t_mean) + 1)
+        steps = np.arange(1 , len(E_t_mean) + 1)
 
         fig, axs = plt.subplots(3, 1, figsize=(8, 10))
 
@@ -738,7 +744,7 @@ class ARModel(pl.LightningModule):
         axs[1].plot(steps, E_abs_mean)
         axs[1].fill_between(steps, E_abs_mean - E_abs_std, E_abs_mean + E_abs_std, alpha=0.3)
         axs[1].set_title("Mean absolute energy error ± std")
-        axs[1].set_ylabel(r"|$u_t-\hat{u}_t|$")
+        axs[1].set_ylabel(r"|$\hat{u}_t-u_t|$")
         axs[1].set_yscale("log")  # important
         axs[1].grid(True)
 
@@ -747,7 +753,7 @@ class ARModel(pl.LightningModule):
         axs[2].fill_between(steps, E_rel_mean - E_rel_std, E_rel_mean + E_rel_std, alpha=0.3)
         axs[2].set_title("Mean relative energy error ± std")
         axs[2].set_xlabel("Rollout step")
-        axs[2].set_ylabel("r$|\hat{u}_t-u_t|/u_t$")
+        axs[2].set_ylabel(r"$\frac{|\hat{u}_t-u_t|}{|u_t|}$")
         axs[2].set_yscale("log")  # important
         axs[2].grid(True)
 
