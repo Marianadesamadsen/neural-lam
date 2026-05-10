@@ -35,9 +35,6 @@ from integrate_sphere.compute_energy_batch_new import energy_out_to_torch
 from integrate_sphere.compute_energy_batch_new import compute_energy_over_time_torch
 
 
-import pandas as pd
-import os
-
 class ARModel(pl.LightningModule):
     """
     Generic auto-regressive weather model.
@@ -212,6 +209,11 @@ class ARModel(pl.LightningModule):
             "pred": [],
             "abs_error": [],
             "rel_error": [],
+        }
+
+        self.test_per_sample_metrics = {
+            "mse": [],
+            "mae": [],
         }
 
         # Visualization settings
@@ -1185,6 +1187,26 @@ class ARModel(pl.LightningModule):
             )  # (B, pred_steps, d_f)
             self.test_metrics[metric_name].append(batch_metric_vals)
 
+
+        mse_per_sample = metrics.mse(
+            prediction,
+            target,
+            pred_std,
+            mask=self.interior_mask_bool,
+            sum_vars=True,
+            )  # (B, rollout_steps)
+
+        mae_per_sample = metrics.mae(
+            prediction,
+            target,
+            pred_std,
+            mask=self.interior_mask_bool,
+            sum_vars=True,
+        )  # (B, rollout_steps)
+
+        self.test_per_sample_metrics["mse"].append(mse_per_sample.detach())
+        self.test_per_sample_metrics["mae"].append(mae_per_sample.detach())
+
         if self.output_std:
             # Store output std. per variable, spatially averaged
             mean_pred_std = torch.mean(
@@ -1217,23 +1239,6 @@ class ARModel(pl.LightningModule):
                     zarr_output_path=self.args.save_eval_to_zarr_path,
                 )
 
-        # Plot example predictions (on rank 0 only)
-        if (
-            self.trainer.is_global_zero
-            and self.plotted_examples < self.n_example_pred
-        ):
-            # Need to plot more example predictions
-            n_additional_examples = min(
-                prediction.shape[0],
-                self.n_example_pred - self.plotted_examples,
-            )
-
-            # self.plot_examples(
-            #     batch,
-            #     n_additional_examples,
-            #     prediction=prediction,
-            #     split="test",
-            # )
 
     def plot_examples(self, batch, n_examples, split, prediction=None):
         """
@@ -1429,6 +1434,7 @@ class ARModel(pl.LightningModule):
         if prefix == "test":
             # Save pdf
             save_dir = os.path.splitext(self.args.save_eval_to_zarr_path)[0]
+            os.makedirs(save_dir, exist_ok=True)
             metric_fig.savefig(
                 os.path.join(save_dir, f"{full_log_name}.pdf")
             )
@@ -1471,6 +1477,8 @@ class ARModel(pl.LightningModule):
             torch.cat(self.test_energy_metrics["rel_error"], dim=0)
         )
 
+        if not self.trainer.is_global_zero:
+            return
         save_dir = os.path.splitext(self.args.save_eval_to_zarr_path)[0]
         os.makedirs(save_dir, exist_ok=True)
 
@@ -1513,8 +1521,6 @@ class ARModel(pl.LightningModule):
             index=False,
         )
 
-        if not self.trainer.is_global_zero:
-            return
 
         eps = 1e-12
 
@@ -1670,10 +1676,51 @@ class ARModel(pl.LightningModule):
         self.matched_metrics = set()
         self.spatial_loss_maps.clear()
 
+        if self.trainer.is_global_zero and len(self.test_per_sample_metrics["mse"]) > 0:
+            save_dir = os.path.splitext(self.args.save_eval_to_zarr_path)[0]
+            os.makedirs(save_dir, exist_ok=True)
+
+            mse = torch.cat(self.test_per_sample_metrics["mse"], dim=0).cpu().numpy()
+            mae = torch.cat(self.test_per_sample_metrics["mae"], dim=0).cpu().numpy()
+            rmse = np.sqrt(mse)
+
+            columns = [f"rollout_{i+1}" for i in range(mse.shape[1])]
+
+            pd.DataFrame(mse, columns=columns).to_csv(
+                os.path.join(save_dir, "test_mse_per_sample.csv"),
+                index=False,
+            )
+
+            pd.DataFrame(rmse, columns=columns).to_csv(
+                os.path.join(save_dir, "test_rmse_per_sample.csv"),
+                index=False,
+            )
+
+            pd.DataFrame(mae, columns=columns).to_csv(
+                os.path.join(save_dir, "test_mae_per_sample.csv"),
+                index=False,
+            )
+
+            pd.DataFrame(
+                {
+                    "rollout_step": np.arange(1, mse.shape[1] + 1),
+                    "mean_mse": mse.mean(axis=0),
+                    "mean_rmse": rmse.mean(axis=0),
+                    "rmse_from_mean_mse": np.sqrt(mse.mean(axis=0)),
+                    "mean_mae": mae.mean(axis=0),
+                }
+            ).to_csv(
+                os.path.join(save_dir, "test_error_mean_per_rollout.csv"),
+                index=False,
+            )
+
         for metric_list in self.test_metrics.values():
             metric_list.clear()
 
         for metric_list in self.test_energy_metrics.values():
+            metric_list.clear()
+
+        for metric_list in self.test_per_sample_metrics.values():
             metric_list.clear()
 
     def _plot_prediction_snapshots(self, pred_np, target_np, time_np, steps_to_plot=None):
