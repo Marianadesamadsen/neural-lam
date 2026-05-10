@@ -203,6 +203,13 @@ class ARModel(pl.LightningModule):
         self._val_vis_init_states = None
         self._val_vis_forcing = None
 
+        self.test_energy_metrics = {
+            "target": [],
+            "pred": [],
+            "abs_error": [],
+            "rel_error": [],
+        }
+
         # Visualization settings
         self._val_vis_every_n_epochs = 10
 
@@ -934,83 +941,43 @@ class ARModel(pl.LightningModule):
         batch_targets: torch.Tensor,
         batch_idx: int,
         zarr_output_path: str,
-        ):
-        """
-        Save predictions and targets from test/validation to one Zarr store.
+    ):
+        batch_predictions = batch_predictions.detach().cpu()
+        batch_targets = batch_targets.detach().cpu()
+        batch_times = batch_times.detach().cpu()
 
-        Output variables:
-            prediction: (start_time, elapsed_forecast_duration, grid_index, state_feature)
-            target:     (start_time, elapsed_forecast_duration, grid_index, state_feature)
-        """
-
-        batch_size = batch_predictions.shape[0]
-        eval_split = self.args.eval or "test"
-
-        das_pred = []
-        das_target = []
-
-        for i in range(len(batch_times)):
-            da_pred = self._create_dataarray_from_tensor(
-                tensor=batch_predictions[i],
-                time=batch_times[i],
-                split=eval_split,
-                category="state",
-            )
-
-            da_target = self._create_dataarray_from_tensor(
-                tensor=batch_targets[i],
-                time=batch_times[i],
-                split=eval_split,
-                category="state",
-            )
-
-            t0 = da_pred.coords["time"].values[0]
-
-            for da in [da_pred, da_target]:
-                da.coords["analysis_time"] = t0
-                da.coords["elapsed_forecast_duration"] = da.time - t0
-                da.analysis_time.attrs["standard_name"] = "forecast_reference_time"
-                da.elapsed_forecast_duration.attrs["standard_name"] = "forecast_period"
-
-            da_pred = da_pred.swap_dims({"time": "elapsed_forecast_duration"})
-            da_target = da_target.swap_dims({"time": "elapsed_forecast_duration"})
-
-            da_pred.name = "prediction"
-            da_target.name = "target"
-
-            das_pred.append(da_pred)
-            das_target.append(da_target)
-
-        da_pred_batch = xr.concat(das_pred, dim="start_time")
-        da_target_batch = xr.concat(das_target, dim="start_time")
+        batch_size, pred_steps, num_grid_nodes, num_state_features = batch_predictions.shape
 
         ds_batch = xr.Dataset(
-            {
-                "prediction": da_pred_batch,
-                "target": da_target_batch,
-            }
+            data_vars={
+                "prediction": (
+                    ("sample", "rollout_step", "grid_index", "state_feature"),
+                    batch_predictions.numpy(),
+                ),
+                "target": (
+                    ("sample", "rollout_step", "grid_index", "state_feature"),
+                    batch_targets.numpy(),
+                ),
+                "valid_time": (
+                    ("sample", "rollout_step"),
+                    batch_times.numpy(),
+                ),
+            },
+            coords={
+                "rollout_step": np.arange(1, pred_steps + 1),
+                "grid_index": np.arange(num_grid_nodes),
+                "state_feature": np.arange(num_state_features),
+            },
         )
 
         ds_batch = ds_batch.chunk(
             {
-                "start_time": batch_size,
-                "elapsed_forecast_duration": -1,
-                "grid_index": -1,
-                "state_feature": -1,
+                "sample": batch_size,
+                "rollout_step": pred_steps,
+                "grid_index": num_grid_nodes,
+                "state_feature": num_state_features,
             }
         )
-
-        for attr in ["long_name", "units"]:
-            var_name = f"state_feature_{attr}"
-            if var_name in self._datastore._ds:
-                ds_batch.coords[var_name] = self._datastore._ds[var_name]
-
-        for idx_name in list(ds_batch.indexes):
-            idx = ds_batch.indexes[idx_name]
-            if isinstance(idx, pd.MultiIndex):
-                ds_batch = cfxr.encode_multi_index_as_compress(
-                    ds_batch, idxnames=[idx_name]
-                )
 
         if batch_idx == 0:
             logger.info(f"Saving predictions and targets to {zarr_output_path}")
@@ -1019,9 +986,8 @@ class ARModel(pl.LightningModule):
             ds_batch.to_zarr(
                 zarr_output_path,
                 mode="a",
-                append_dim="start_time",
+                append_dim="sample",
             )
-
 
     def _save_predictions_to_zarr(
         self,
@@ -1128,6 +1094,56 @@ class ARModel(pl.LightningModule):
         # prediction: (B, pred_steps, num_grid_nodes, d_f)
         # pred_std: (B, pred_steps, num_grid_nodes, d_f) or (d_f,)
 
+        init_states = batch[0]
+
+        pred_full = torch.cat(
+            [
+                init_states[:, :, :, 0],
+                prediction[:, :, :, 0],
+            ],
+            dim=1,
+        )
+
+        target_full = torch.cat(
+            [
+                init_states[:, :, :, 0],
+                target[:, :, :, 0],
+            ],
+            dim=1,
+        )
+
+        pred_phys_batch = pred_full * self.state_std[0] + self.state_mean[0]
+        target_phys_batch = target_full * self.state_std[0] + self.state_mean[0]
+
+        energy_out = self.get_energy_out_torch()
+        dt = self.time_step_int
+        ut_order = 4
+
+        E_pred_batch = compute_energy_over_time_torch(
+            pred_phys_batch,
+            out=energy_out,
+            dt=dt,
+            c=1.0,
+            ut_order=ut_order,
+        )
+
+        E_target_batch = compute_energy_over_time_torch(
+            target_phys_batch,
+            out=energy_out,
+            dt=dt,
+            c=1.0,
+            ut_order=ut_order,
+        )
+
+        eps = 1e-12
+        E_abs_error_batch = torch.abs(E_pred_batch - E_target_batch)
+        E_rel_error_batch = E_abs_error_batch / (torch.abs(E_target_batch) + eps)
+
+        self.test_energy_metrics["pred"].append(E_pred_batch.detach())
+        self.test_energy_metrics["target"].append(E_target_batch.detach())
+        self.test_energy_metrics["abs_error"].append(E_abs_error_batch.detach())
+        self.test_energy_metrics["rel_error"].append(E_rel_error_batch.detach())
+
         time_step_loss = torch.mean(
             self.loss(
                 prediction, target, pred_std, mask=self.interior_mask_bool
@@ -1182,10 +1198,12 @@ class ARModel(pl.LightningModule):
         self.spatial_loss_maps.append(log_spatial_losses)
         # (B, N_log, num_grid_nodes)
 
-        if self.args.save_eval_to_zarr_path:
+        max_saved_batches = 0
+        if (
+            self.args.save_eval_to_zarr_path
+            and batch_idx < max_saved_batches
+        ):
             if self.trainer.is_global_zero:
-                dir = os.path.join(self.args.save_eval_to_zarr_path, "raw_preds")
-                os.makedirs(dir, exist_ok=True)
 
                 self._save_predictions_and_targets_to_zarr(
                     batch_times=batch_times,
@@ -1194,26 +1212,6 @@ class ARModel(pl.LightningModule):
                     batch_idx=batch_idx,
                     zarr_output_path=self.args.save_eval_to_zarr_path,
                 )
-
-                # torch.save(
-                #     prediction.cpu(),
-                #     os.path.join(dir, f"pred_batch_{batch_idx}.pt"),
-                # )
-                # torch.save(
-                #     target.cpu(),
-                #     os.path.join(dir, f"target_batch_{batch_idx}.pt"),
-                # )
-                # torch.save(
-                #     batch_times.cpu(),
-                #     os.path.join(dir, f"time_batch_{batch_idx}.pt"),
-                # )
-
-            # self._save_predictions_to_zarr(
-            #     batch_times=batch_times,
-            #     batch_predictions=prediction,
-            #     batch_idx=batch_idx,
-            #     zarr_output_path=self.args.save_eval_to_zarr_path,
-            # )
 
         # Plot example predictions (on rank 0 only)
         if (
@@ -1446,7 +1444,118 @@ class ARModel(pl.LightningModule):
                     key = f"{full_log_name}_{var_name}_step_{step}"
                     log_dict[key] = metric_tensor[step - 1, var_i]
 
-        return log_dict
+        return log_dict 
+
+    def aggregate_and_plot_test_energy_metrics(self):
+        if len(self.test_energy_metrics["target"]) == 0:
+            return
+
+        energy_target = self.all_gather_cat(
+            torch.cat(self.test_energy_metrics["target"], dim=0)
+        )
+
+        energy_pred = self.all_gather_cat(
+            torch.cat(self.test_energy_metrics["pred"], dim=0)
+        )
+
+        energy_abs_error = self.all_gather_cat(
+            torch.cat(self.test_energy_metrics["abs_error"], dim=0)
+        )
+
+        energy_rel_error = self.all_gather_cat(
+            torch.cat(self.test_energy_metrics["rel_error"], dim=0)
+        )
+
+        if not self.trainer.is_global_zero:
+            return
+
+        eps = 1e-12
+
+        mean_abs_error_per_rollout = torch.mean(energy_abs_error, dim=0)
+        mean_rel_error_per_rollout = torch.mean(energy_rel_error, dim=0)
+
+        pred_energy_drift = (
+            torch.max(energy_pred, dim=1).values
+            - torch.min(energy_pred, dim=1).values
+        ) / (torch.abs(energy_pred[:, 0]) + eps)
+
+        target_energy_drift = (
+            torch.max(energy_target, dim=1).values
+            - torch.min(energy_target, dim=1).values
+        ) / (torch.abs(energy_target[:, 0]) + eps)
+
+        energy_ratio_error = torch.abs(
+            energy_pred / (energy_target + eps) - 1.0
+        )
+
+        energy_log_dict = {
+            "test_mean_energy_abs_error": torch.mean(energy_abs_error),
+            "test_mean_energy_rel_error": torch.mean(energy_rel_error),
+            "test_mean_pred_energy_drift": torch.mean(pred_energy_drift),
+            "test_mean_target_energy_drift": torch.mean(target_energy_drift),
+            "test_mean_energy_ratio_error": torch.mean(energy_ratio_error),
+        }
+
+        for step in self.args.val_steps_to_log:
+            idx = step - 1
+            if idx < len(mean_abs_error_per_rollout):
+                energy_log_dict[f"test_energy_abs_error_rollout{step}"] = (
+                    mean_abs_error_per_rollout[idx]
+                )
+                energy_log_dict[f"test_energy_rel_error_rollout{step}"] = (
+                    mean_rel_error_per_rollout[idx]
+                )
+
+        self.log_dict(
+            energy_log_dict,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
+
+        figs = {
+            "test_energy_target": self.plot_energy_error_map(
+                energy_target,
+                title="Test target energy",
+                cbar_label="Energy",
+            ),
+            "test_energy_pred": self.plot_energy_error_map(
+                energy_pred,
+                title="Test predicted energy",
+                cbar_label="Energy",
+            ),
+            "test_energy_abs_error": self.plot_energy_error_map(
+                energy_abs_error,
+                title="Test absolute energy error",
+                cbar_label="|Energy error|",
+            ),
+            "test_energy_rel_error": self.plot_energy_error_map(
+                energy_rel_error,
+                title="Test relative energy error",
+                cbar_label="Relative energy error",
+            ),
+        }
+
+        for key, fig in figs.items():
+            if hasattr(self.logger, "log_image"):
+                self.logger.log_image(key=key, images=[fig])
+
+        plt.close("all")
+
+        fig_mean_std = self.plot_mean_energy_with_std(
+            energy_target,
+            energy_pred,
+            energy_abs_error,
+            energy_rel_error,
+        )
+
+        if hasattr(self.logger, "log_image"):
+            self.logger.log_image(
+                key="test_energy_mean_std",
+                images=[fig_mean_std],
+            )
+
+        plt.close(fig_mean_std)
 
     def aggregate_and_plot_metrics(self, metrics_dict, prefix):
         """
@@ -1505,73 +1614,20 @@ class ARModel(pl.LightningModule):
 
     def on_test_epoch_end(self):
         """
-        Compute test metrics and make plots at the end of test epoch. Will
-        gather stored tensors and perform plotting and logging on rank 0.
+        Compute test metrics and make plots at the end of test epoch.
         """
-        # Create error maps for all test metrics
+
         self.aggregate_and_plot_metrics(self.test_metrics, prefix="test")
-
-        if False:
-            # Plot spatial loss maps
-            spatial_loss_tensor = self.all_gather_cat(
-                torch.cat(self.spatial_loss_maps, dim=0)
-            )  # (N_test, N_log, num_grid_nodes)
-            if self.trainer.is_global_zero:
-                mean_spatial_loss = torch.mean(
-                    spatial_loss_tensor, dim=0
-                )  # (N_log, num_grid_nodes)
-
-                loss_map_figs = [
-                    vis.plot_spatial_error(
-                        error=loss_map,
-                        datastore=self._datastore,
-                        title=f"Test loss, t={t_i} "
-                        f"({(self.time_step_int * t_i)} {self.time_step_unit})",
-                    )
-                    for t_i, loss_map in zip(
-                        self.args.val_steps_to_log, mean_spatial_loss
-                    )
-                ]
-
-                # log all to same key, sequentially
-                for i, fig in enumerate(loss_map_figs):
-                    key = "test_loss"
-                    if not isinstance(self.logger, pl.loggers.WandbLogger):
-                        key = f"{key}_{i}"
-                    if hasattr(self.logger, "log_image"):
-                        self.logger.log_image(key=key, images=[fig])
-
-                # also make without title and save as pdf
-                pdf_loss_map_figs = [
-                    vis.plot_spatial_error(
-                        error=loss_map, datastore=self._datastore
-                    )
-                    for loss_map in mean_spatial_loss
-                ]
-                pdf_loss_maps_dir = os.path.join(
-                    self.logger.save_dir, "spatial_loss_maps"
-                )
-                os.makedirs(pdf_loss_maps_dir, exist_ok=True)
-                for t_i, fig in zip(self.args.val_steps_to_log, pdf_loss_map_figs):
-                    fig.savefig(os.path.join(pdf_loss_maps_dir, f"loss_t{t_i}.pdf"))
-                # save mean spatial loss as .pt file also
-                torch.save(
-                    mean_spatial_loss.cpu(),
-                    os.path.join(self.logger.save_dir, "mean_spatial_loss.pt"),
-                )
-
-                if getattr(self.args, "metrics_watch", None):
-                    unmatched = set(self.args.metrics_watch) - self.matched_metrics
-                    if unmatched:
-                        warnings.warn(
-                            "The following metrics in --metrics_watch "
-                            "were not found during test phase: "
-                            f"{sorted(unmatched)}. Ensure the metric prefix "
-                            "matches the evaluation mode (expected 'test_')."
-                        )
+        self.aggregate_and_plot_test_energy_metrics()
 
         self.matched_metrics = set()
         self.spatial_loss_maps.clear()
+
+        for metric_list in self.test_metrics.values():
+            metric_list.clear()
+
+        for metric_list in self.test_energy_metrics.values():
+            metric_list.clear()
 
     def _plot_prediction_snapshots(self, pred_np, target_np, time_np, steps_to_plot=None):
         """
