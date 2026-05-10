@@ -927,6 +927,102 @@ class ARModel(pl.LightningModule):
         for metric_list in self.val_energy_metrics.values():
             metric_list.clear()
 
+    def _save_predictions_and_targets_to_zarr(
+        self,
+        batch_times: torch.Tensor,
+        batch_predictions: torch.Tensor,
+        batch_targets: torch.Tensor,
+        batch_idx: int,
+        zarr_output_path: str,
+        ):
+        """
+        Save predictions and targets from test/validation to one Zarr store.
+
+        Output variables:
+            prediction: (start_time, elapsed_forecast_duration, grid_index, state_feature)
+            target:     (start_time, elapsed_forecast_duration, grid_index, state_feature)
+        """
+
+        batch_size = batch_predictions.shape[0]
+        eval_split = self.args.eval or "test"
+
+        das_pred = []
+        das_target = []
+
+        for i in range(len(batch_times)):
+            da_pred = self._create_dataarray_from_tensor(
+                tensor=batch_predictions[i],
+                time=batch_times[i],
+                split=eval_split,
+                category="state",
+            )
+
+            da_target = self._create_dataarray_from_tensor(
+                tensor=batch_targets[i],
+                time=batch_times[i],
+                split=eval_split,
+                category="state",
+            )
+
+            t0 = da_pred.coords["time"].values[0]
+
+            for da in [da_pred, da_target]:
+                da.coords["analysis_time"] = t0
+                da.coords["elapsed_forecast_duration"] = da.time - t0
+                da.analysis_time.attrs["standard_name"] = "forecast_reference_time"
+                da.elapsed_forecast_duration.attrs["standard_name"] = "forecast_period"
+
+            da_pred = da_pred.swap_dims({"time": "elapsed_forecast_duration"})
+            da_target = da_target.swap_dims({"time": "elapsed_forecast_duration"})
+
+            da_pred.name = "prediction"
+            da_target.name = "target"
+
+            das_pred.append(da_pred)
+            das_target.append(da_target)
+
+        da_pred_batch = xr.concat(das_pred, dim="start_time")
+        da_target_batch = xr.concat(das_target, dim="start_time")
+
+        ds_batch = xr.Dataset(
+            {
+                "prediction": da_pred_batch,
+                "target": da_target_batch,
+            }
+        )
+
+        ds_batch = ds_batch.chunk(
+            {
+                "start_time": batch_size,
+                "elapsed_forecast_duration": -1,
+                "grid_index": -1,
+                "state_feature": -1,
+            }
+        )
+
+        for attr in ["long_name", "units"]:
+            var_name = f"state_feature_{attr}"
+            if var_name in self._datastore._ds:
+                ds_batch.coords[var_name] = self._datastore._ds[var_name]
+
+        for idx_name in list(ds_batch.indexes):
+            idx = ds_batch.indexes[idx_name]
+            if isinstance(idx, pd.MultiIndex):
+                ds_batch = cfxr.encode_multi_index_as_compress(
+                    ds_batch, idxnames=[idx_name]
+                )
+
+        if batch_idx == 0:
+            logger.info(f"Saving predictions and targets to {zarr_output_path}")
+            ds_batch.to_zarr(zarr_output_path, mode="w", consolidated=True)
+        else:
+            ds_batch.to_zarr(
+                zarr_output_path,
+                mode="a",
+                append_dim="start_time",
+            )
+
+
     def _save_predictions_to_zarr(
         self,
         batch_times: torch.Tensor,
@@ -1091,18 +1187,26 @@ class ARModel(pl.LightningModule):
                 dir = os.path.join(self.args.save_eval_to_zarr_path, "raw_preds")
                 os.makedirs(dir, exist_ok=True)
 
-                torch.save(
-                    prediction.cpu(),
-                    os.path.join(dir, f"pred_batch_{batch_idx}.pt"),
+                self._save_predictions_and_targets_to_zarr(
+                    batch_times=batch_times,
+                    batch_predictions=prediction.detach().cpu(),
+                    batch_targets=target.detach().cpu(),
+                    batch_idx=batch_idx,
+                    zarr_output_path=self.args.save_eval_to_zarr_path,
                 )
-                torch.save(
-                    target.cpu(),
-                    os.path.join(dir, f"target_batch_{batch_idx}.pt"),
-                )
-                torch.save(
-                    batch_times.cpu(),
-                    os.path.join(dir, f"time_batch_{batch_idx}.pt"),
-                )
+
+                # torch.save(
+                #     prediction.cpu(),
+                #     os.path.join(dir, f"pred_batch_{batch_idx}.pt"),
+                # )
+                # torch.save(
+                #     target.cpu(),
+                #     os.path.join(dir, f"target_batch_{batch_idx}.pt"),
+                # )
+                # torch.save(
+                #     batch_times.cpu(),
+                #     os.path.join(dir, f"time_batch_{batch_idx}.pt"),
+                # )
 
             # self._save_predictions_to_zarr(
             #     batch_times=batch_times,
