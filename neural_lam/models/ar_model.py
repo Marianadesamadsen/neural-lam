@@ -34,6 +34,10 @@ from integrate_sphere.compute_energy_batch_new import surface_mass_integration
 from integrate_sphere.compute_energy_batch_new import energy_out_to_torch
 from integrate_sphere.compute_energy_batch_new import compute_energy_over_time_torch
 
+
+import pandas as pd
+import os
+
 class ARModel(pl.LightningModule):
     """
     Generic auto-regressive weather model.
@@ -1198,7 +1202,7 @@ class ARModel(pl.LightningModule):
         self.spatial_loss_maps.append(log_spatial_losses)
         # (B, N_log, num_grid_nodes)
 
-        max_saved_batches = 0
+        max_saved_batches = 5
         if (
             self.args.save_eval_to_zarr_path
             and batch_idx < max_saved_batches
@@ -1424,12 +1428,13 @@ class ARModel(pl.LightningModule):
 
         if prefix == "test":
             # Save pdf
+            save_dir = os.path.splitext(self.args.save_eval_to_zarr_path)[0]
             metric_fig.savefig(
-                os.path.join(self.logger.save_dir, f"{full_log_name}.pdf")
+                os.path.join(save_dir, f"{full_log_name}.pdf")
             )
             # Save errors also as csv
             np.savetxt(
-                os.path.join(self.logger.save_dir, f"{full_log_name}.csv"),
+                os.path.join(save_dir, f"{full_log_name}.csv"),
                 metric_tensor.cpu().numpy(),
                 delimiter=",",
             )
@@ -1464,6 +1469,48 @@ class ARModel(pl.LightningModule):
 
         energy_rel_error = self.all_gather_cat(
             torch.cat(self.test_energy_metrics["rel_error"], dim=0)
+        )
+
+        save_dir = os.path.splitext(self.args.save_eval_to_zarr_path)[0]
+        os.makedirs(save_dir, exist_ok=True)
+
+        energy_pred_np = energy_pred.detach().cpu().numpy()
+        energy_target_np = energy_target.detach().cpu().numpy()
+        energy_abs_np = energy_abs_error.detach().cpu().numpy()
+        energy_rel_np = energy_rel_error.detach().cpu().numpy()
+
+        columns = [f"rollout_{i+1}" for i in range(energy_pred_np.shape[1])]
+
+        pd.DataFrame(
+            energy_pred_np,
+            columns=columns,
+        ).to_csv(
+            os.path.join(save_dir, "test_energy_pred_per_sample.csv"),
+            index=False,
+        )
+
+        pd.DataFrame(
+            energy_target_np,
+            columns=columns,
+        ).to_csv(
+            os.path.join(save_dir, "test_energy_target_per_sample.csv"),
+            index=False,
+        )
+
+        pd.DataFrame(
+            energy_abs_np,
+            columns=columns,
+        ).to_csv(
+            os.path.join(save_dir, "test_energy_abs_error_per_sample.csv"),
+            index=False,
+        )
+
+        pd.DataFrame(
+            energy_rel_np,
+            columns=columns,
+        ).to_csv(
+            os.path.join(save_dir, "test_energy_rel_error_per_sample.csv"),
+            index=False,
         )
 
         if not self.trainer.is_global_zero:
