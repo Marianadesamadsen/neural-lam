@@ -1231,6 +1231,9 @@ class ARModel(pl.LightningModule):
         ):
             if self.trainer.is_global_zero:
 
+                prediction_phys = prediction * self.state_std + self.state_mean
+                target_phys = target * self.state_std + self.state_mean
+
                 self._save_predictions_and_targets_to_zarr(
                     batch_times=batch_times,
                     batch_predictions=prediction.detach().cpu(),
