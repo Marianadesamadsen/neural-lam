@@ -71,7 +71,7 @@ def main(input_args=None):
     parser.add_argument(
         "--epochs",
         type=int,
-        default=200,
+        default=-1,
         help="upper epoch limit",
     )
     parser.add_argument(
