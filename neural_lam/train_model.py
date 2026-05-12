@@ -74,6 +74,12 @@ def main(input_args=None):
         default=200,
         help="upper epoch limit",
     )
+    parser.add_argument(
+        "--max_steps",
+        type=int,
+        default=-1,
+        help="Maximum number of training steps",
+    )
     parser.add_argument("--batch_size", type=int, default=4, help="batch size")
     parser.add_argument(
         "--load",
@@ -259,13 +265,26 @@ def main(input_args=None):
 
     parser.add_argument(
         "--precompute_in_memory",
-        type = bool,
-        default=False,
+        action = "store_true",
         help=(
             "If set, precompute all samples in the dataset and store in memory. "
             "This can speed up training if the dataset is small enough to fit in "
             "memory, but will increase memory usage and startup time."
         ),
+    )
+
+    parser.add_argument(
+        "--checkpoint_every_n_steps",
+        type=int,
+        default=20000,
+        help="Save an additional checkpoint every N training steps",
+    )
+
+    parser.add_argument(
+        "--val_time_stride",
+        type = int,
+        default= 1,
+        help="Stride in val data, more training effeciency"
     )
 
     args = parser.parse_args(input_args)
@@ -319,7 +338,10 @@ def main(input_args=None):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         eval_split=args.eval or "test",
-        precompute_in_memory=args.precompute_in_memory
+        precompute_in_memory=args.precompute_in_memory,
+        val_time_stride=args.val_time_stride,
+        train_time_stride=1,
+        test_time_stride=1
     )
 
     # Instantiate model + trainer
@@ -365,13 +387,22 @@ def main(input_args=None):
         datastore=datastore, args=args, run_name=run_name
     )
 
-    checkpoint_callback = pl.callbacks.ModelCheckpoint(
+    checkpoint_best_callback = pl.callbacks.ModelCheckpoint(
         dirpath=f"saved_models/{run_name}",
-        filename="min_val_loss",
+        filename="min_val_loss-{epoch:03d}-{val_mean_loss:.6f}",
         monitor="val_mean_loss",
         mode="min",
+        save_top_k=1,
         save_last=True,
-    ) 
+        )
+
+    checkpoint_step_callback = pl.callbacks.ModelCheckpoint(
+            dirpath=f"saved_models/{run_name}",
+            filename="step-{step}",
+            every_n_train_steps=args.checkpoint_every_n_steps,
+            save_top_k=-1,      # keep all step checkpoints
+            save_last=False,
+        )
 
     early_stopping_callback = EarlyStopping(
         monitor="val_mean_loss",
@@ -382,6 +413,7 @@ def main(input_args=None):
     )
 
     trainer = pl.Trainer(
+        max_steps=args.max_steps,
         max_epochs=args.epochs,
         deterministic=True,
         strategy="auto",
@@ -390,7 +422,7 @@ def main(input_args=None):
         devices=devices,
         logger=training_logger,
         log_every_n_steps=1,
-        callbacks=[checkpoint_callback], # Obs no early_stopping_callback
+        callbacks=[checkpoint_best_callback, checkpoint_step_callback], # Obs no early_stopping_callback
         check_val_every_n_epoch=args.val_interval,
         precision=args.precision,
     )

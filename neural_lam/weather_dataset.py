@@ -56,6 +56,7 @@ class WeatherDataset(torch.utils.data.Dataset):
         load_single_member: bool = False,
         standardize: bool = True,
         precompute_in_memory: bool = False,
+        time_stride: int = 1
     ):
         super().__init__()
 
@@ -70,6 +71,7 @@ class WeatherDataset(torch.utils.data.Dataset):
         self.target_states_np = None
         self.target_times_np = None
         self.forcing_np = None
+        self.time_stride = time_stride
 
         self.da_state = self.datastore.get_dataarray(
             category="state", split=self.split
@@ -193,7 +195,7 @@ class WeatherDataset(torch.utils.data.Dataset):
         else:
             n_ens = 1
 
-        base_len = (
+        raw_base_len = (
             time_len
             - self.ar_steps
             - max(2, self.num_past_forcing_steps)
@@ -234,7 +236,7 @@ class WeatherDataset(torch.utils.data.Dataset):
         # IMPORTANT:
         # This ordering matches __getitem__:
         # sample_idx, i_ensemble = divmod(idx, n_ensemble_members)
-        for sample_idx in range(base_len):
+        for sample_idx in range(0,raw_base_len,self.time_stride):
             for i_ens in range(n_ens):
                 state_np = state_np_list[i_ens]
                 time_np = time_np_list[i_ens]
@@ -332,14 +334,16 @@ class WeatherDataset(torch.utils.data.Dataset):
             #   - past forcing: max(2, self.num_past_forcing_steps) (at least 2
             #     time steps are required for the initial state)
             #   - future forcing: self.num_future_forcing_steps
-            base_len = (
+            raw_base_len = (
                 len(self.da_state.time)
                 - self.ar_steps
                 - max(2, self.num_past_forcing_steps)
                 - self.num_future_forcing_steps
             )
+            base_len = (raw_base_len + self.time_stride - 1) // self.time_stride
         if self.datastore.is_ensemble and not self.load_single_member:
             return base_len * self.da_state.ensemble_member.size
+        
         return base_len
 
     def _slice_state_time(self, da_state, idx, n_steps: int):
@@ -545,6 +549,8 @@ class WeatherDataset(torch.utils.data.Dataset):
             da_state = self.da_state.isel(ensemble_member=i_ensemble)
         else:
             da_state = self.da_state
+
+        sample_idx = sample_idx*self.time_stride       
 
         if self.da_forcing is not None:
             if self.datastore.has_ensemble_forcing:
@@ -819,6 +825,9 @@ class WeatherDataModule(pl.LightningDataModule):
         num_workers: int = 16,
         eval_split: str = "test",
         precompute_in_memory: bool = False,
+        train_time_stride: int = 1,
+        val_time_stride: int = 1,
+        test_time_stride: int = 1
     ):
         super().__init__()
         self._datastore = datastore
@@ -835,6 +844,9 @@ class WeatherDataModule(pl.LightningDataModule):
         self.test_dataset = None
         self.multiprocessing_context: Union[str, None] = None
         self.eval_split = eval_split
+        self.train_time_stride = train_time_stride
+        self.val_time_stride = val_time_stride
+        self.test_time_stride = test_time_stride
         if num_workers > 0:
             # default to spawn for now, as the default on linux "fork" hangs
             # when using dask (which the npyfilesmeps datastore uses)
@@ -852,6 +864,7 @@ class WeatherDataModule(pl.LightningDataModule):
                 num_future_forcing_steps=self.num_future_forcing_steps,
                 load_single_member=self.load_single_member,
                 precompute_in_memory=self.precompute_in_memory,
+                time_stride=self.train_time_stride
             )
             self.val_dataset = WeatherDataset(
                 datastore=self._datastore,
@@ -862,6 +875,7 @@ class WeatherDataModule(pl.LightningDataModule):
                 num_future_forcing_steps=self.num_future_forcing_steps,
                 load_single_member=self.load_single_member,
                 precompute_in_memory=self.precompute_in_memory,
+                time_stride=self.val_time_stride
             )
 
         if stage == "test" or stage is None:
@@ -874,6 +888,7 @@ class WeatherDataModule(pl.LightningDataModule):
                 num_future_forcing_steps=self.num_future_forcing_steps,
                 load_single_member=self.load_single_member,
                 precompute_in_memory=self.precompute_in_memory,
+                time_stride=self.test_time_stride
             )
 
     def train_dataloader(self):
