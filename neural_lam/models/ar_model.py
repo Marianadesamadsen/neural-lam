@@ -495,7 +495,7 @@ class ARModel(pl.LightningModule):
         val_log_dict["val_mean_loss"] = mean_loss
         self.log_dict(
             val_log_dict,
-            on_step=False,
+            on_step=True,
             on_epoch=True,
             sync_dist=True,
             batch_size=batch[0].shape[0],
@@ -660,7 +660,7 @@ class ARModel(pl.LightningModule):
 
         self.log_dict(
             energy_log_dict,
-            on_step=False,
+            on_step=True,
             on_epoch=True,
             sync_dist=True,
         )
@@ -877,7 +877,7 @@ class ARModel(pl.LightningModule):
             self.log(
                 "val_spectral_radius",
                 spectral_radius,
-                on_step=False,
+                on_step=True,
                 on_epoch=True,
                 sync_dist=True,
             )
@@ -1167,7 +1167,7 @@ class ARModel(pl.LightningModule):
 
         self.log_dict(
             test_log_dict,
-            on_step=False,
+            on_step=True,
             on_epoch=True,
             sync_dist=True,
             batch_size=batch[0].shape[0],
@@ -1564,7 +1564,7 @@ class ARModel(pl.LightningModule):
 
         self.log_dict(
             energy_log_dict,
-            on_step=False,
+            on_step=True,
             on_epoch=True,
             sync_dist=True,
         )
@@ -1836,11 +1836,7 @@ class ARModel(pl.LightningModule):
                 else 0.0
             )
 
-            print(
-                f"[train batch {batch_idx}] "
-                f"avg inter-batch gap={avg_gap:.4f}s, "
-                f"avg compute={avg_compute:.4f}s"
-            )
+
 
     def on_train_epoch_end(self):
         if not self.trainer.is_global_zero:
@@ -1860,13 +1856,6 @@ class ARModel(pl.LightningModule):
             sum(self._train_batch_compute_times) / len(self._train_batch_compute_times)
             if self._train_batch_compute_times
             else 0.0
-        )
-
-        print(
-            f"[epoch {self.current_epoch}] "
-            f"epoch_time={epoch_time:.2f}s, "
-            f"inter-batch gap={avg_gap:.4f}s, "
-            f"compute={avg_compute:.4f}s"
         )
 
         self.log("timing/epoch_time", epoch_time, on_epoch=True)
