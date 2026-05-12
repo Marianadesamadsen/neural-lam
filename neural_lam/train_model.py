@@ -245,13 +245,13 @@ def main(input_args=None):
     parser.add_argument(
         "--num_past_forcing_steps",
         type=int,
-        default=1,
+        default=0,
         help="Number of past time steps to use as input for forcing data",
     )
     parser.add_argument(
         "--num_future_forcing_steps",
         type=int,
-        default=1,
+        default=0,
         help="Number of future time steps to use as input for forcing data",
     )
     parser.add_argument(

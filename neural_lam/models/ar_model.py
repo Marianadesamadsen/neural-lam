@@ -501,6 +501,19 @@ class ARModel(pl.LightningModule):
             batch_size=batch[0].shape[0],
         )
 
+        energy_step_log_dict = {
+            "val_batch_energy_rel_error": torch.mean(E_rel_error_batch),
+            "val_batch_energy_abs_error": torch.mean(E_abs_error_batch),
+        }
+
+        self.log_dict(
+            energy_step_log_dict,
+            on_step=True,
+            on_epoch=False,
+            sync_dist=True,
+            batch_size=batch[0].shape[0],
+        )
+
         # Store MSEs
         entry_mses = metrics.mse(
             prediction,
@@ -660,7 +673,7 @@ class ARModel(pl.LightningModule):
 
         self.log_dict(
             energy_log_dict,
-            on_step=True,
+            on_step=False,
             on_epoch=True,
             sync_dist=True,
         )
@@ -862,36 +875,6 @@ class ARModel(pl.LightningModule):
         self.aggregate_and_plot_metrics(self.val_metrics, prefix="val")
         #if is_plot_epoch:
         self.aggregate_and_plot_energy_metrics()
-
-        should_compute_eigs = False
-
-        # Eigenvalues: only every N epochs
-        if should_compute_eigs:
-            eigvals, _ = self.compute_ar_jacobian_eigenvalues(
-                init_states=self._val_vis_init_states,
-                forcing=self._val_vis_forcing,
-            )
-
-            spectral_radius = float(np.max(np.abs(eigvals)))
-
-            self.log(
-                "val_spectral_radius",
-                spectral_radius,
-                on_step=True,
-                on_epoch=True,
-                sync_dist=True,
-            )
-
-            fig = self.plot_eigenvalues(eigvals)
-
-            if hasattr(self.logger, "log_image"):
-                self.logger.log_image(
-                    key="val_eigenvalues",
-                    images=[fig],
-                    step=self.current_epoch,
-                )
-
-            plt.close(fig)
 
         # Prediction snapshots: only every N epochs
         if should_visualize:
@@ -1564,7 +1547,7 @@ class ARModel(pl.LightningModule):
 
         self.log_dict(
             energy_log_dict,
-            on_step=True,
+            on_step=False,
             on_epoch=True,
             sync_dist=True,
         )
