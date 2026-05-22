@@ -30,10 +30,9 @@ from matplotlib import colors
 
 import sys 
 sys.path.insert(0,"./")
-from integrate_sphere.compute_energy_batch_new import surface_mass_integration
-from integrate_sphere.compute_energy_batch_new import energy_out_to_torch
-from integrate_sphere.compute_energy_batch_new import compute_energy_over_time_torch
-
+from integrate_sphere.compute_energy import surface_mass_integration
+from integrate_sphere.compute_energy import energy_out_to_torch
+from integrate_sphere.compute_energy import compute_energy_over_time_torch
 
 class ARModel(pl.LightningModule):
     """
@@ -214,6 +213,13 @@ class ARModel(pl.LightningModule):
         self.test_per_sample_metrics = {
             "mse": [],
             "mae": [],
+        }
+
+        self.test_max_u_metrics = {
+            "pred_max": [],
+            "target_max": [],
+            "abs_error": [],
+            "rel_error": [],
         }
 
         # Visualization settings
@@ -1186,7 +1192,22 @@ class ARModel(pl.LightningModule):
             mask=self.interior_mask_bool,
             sum_vars=True,
         )  # (B, rollout_steps)
+        prediction_phys = prediction * self.state_std + self.state_mean
+        target_phys = target * self.state_std + self.state_mean
 
+        pred_max_u = torch.amax(torch.abs(prediction_phys[..., 0]), dim=2)    # (B, rollout_steps)
+        target_max_u = torch.amax(torch.abs(target_phys[..., 0]), dim=2)      # (B, rollout_steps)
+
+        max_u_abs_error = torch.abs(target_max_u - pred_max_u)
+
+        eps = 1e-12
+        max_u_rel_error = max_u_abs_error / (torch.abs(target_max_u) + eps)
+
+        self.test_max_u_metrics["pred_max"].append(pred_max_u.detach())
+        self.test_max_u_metrics["target_max"].append(target_max_u.detach())
+        self.test_max_u_metrics["abs_error"].append(max_u_abs_error.detach())
+        self.test_max_u_metrics["rel_error"].append(max_u_rel_error.detach())
+        
         self.test_per_sample_metrics["mse"].append(mse_per_sample.detach())
         self.test_per_sample_metrics["mae"].append(mae_per_sample.detach())
 
@@ -1219,8 +1240,8 @@ class ARModel(pl.LightningModule):
 
                 self._save_predictions_and_targets_to_zarr(
                     batch_times=batch_times,
-                    batch_predictions=prediction.detach().cpu(),
-                    batch_targets=target.detach().cpu(),
+                    batch_predictions=prediction_phys.detach().cpu(),
+                    batch_targets=target_phys.detach().cpu(),
                     batch_idx=batch_idx,
                     zarr_output_path=self.args.save_eval_to_zarr_path,
                 )
@@ -1700,6 +1721,48 @@ class ARModel(pl.LightningModule):
                 index=False,
             )
 
+            if len(self.test_max_u_metrics["pred_max"]) > 0:
+                pred_max = torch.cat(self.test_max_u_metrics["pred_max"], dim=0).cpu().numpy()
+                target_max = torch.cat(self.test_max_u_metrics["target_max"], dim=0).cpu().numpy()
+                max_abs_error = torch.cat(self.test_max_u_metrics["abs_error"], dim=0).cpu().numpy()
+                max_rel_error = torch.cat(self.test_max_u_metrics["rel_error"], dim=0).cpu().numpy()
+
+                max_columns = [f"rollout_{i+1}" for i in range(pred_max.shape[1])]
+
+                pd.DataFrame(pred_max, columns=max_columns).to_csv(
+                    os.path.join(save_dir, "test_u_pred_max_per_sample.csv"),
+                    index=False,
+                )
+
+                pd.DataFrame(target_max, columns=max_columns).to_csv(
+                    os.path.join(save_dir, "test_u_target_max_per_sample.csv"),
+                    index=False,
+                )
+
+                pd.DataFrame(max_abs_error, columns=max_columns).to_csv(
+                    os.path.join(save_dir, "test_u_max_abs_error_per_sample.csv"),
+                    index=False,
+                )
+
+                pd.DataFrame(max_rel_error, columns=max_columns).to_csv(
+                    os.path.join(save_dir, "test_u_max_rel_error_per_sample.csv"),
+                    index=False,
+                )
+
+                pd.DataFrame(
+                    {
+                        "rollout_step": np.arange(1, pred_max.shape[1] + 1),
+                        "mean_pred_max": pred_max.mean(axis=0),
+                        "mean_target_max": target_max.mean(axis=0),
+                        "mean_max_abs_error": max_abs_error.mean(axis=0),
+                        "mean_max_rel_error": max_rel_error.mean(axis=0),
+                    }
+                ).to_csv(
+                    os.path.join(save_dir, "test_u_max_mean_per_rollout.csv"),
+                    index=False,
+                )
+
+
         for metric_list in self.test_metrics.values():
             metric_list.clear()
 
@@ -1707,6 +1770,9 @@ class ARModel(pl.LightningModule):
             metric_list.clear()
 
         for metric_list in self.test_per_sample_metrics.values():
+            metric_list.clear()
+
+        for metric_list in self.test_max_u_metrics.values():
             metric_list.clear()
 
     def _plot_prediction_snapshots(self, pred_np, target_np, time_np, steps_to_plot=None):
