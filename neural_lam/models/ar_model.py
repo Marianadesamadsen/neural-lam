@@ -223,7 +223,12 @@ class ARModel(pl.LightningModule):
         }
 
         # Visualization settings
-        self._val_vis_every_n_epochs = 10
+        self._val_vis_every_n_epochs = 1
+
+        self.test_metadata = {
+            "ensemble_member": [],
+            "sample_idx": [],
+        }
 
     def _create_dataarray_from_tensor(
         self,
@@ -354,7 +359,7 @@ class ARModel(pl.LightningModule):
         num_grid_nodes, d_forcing),
             where index 0 corresponds to index 1 of init_states
         """
-        (init_states, target_states, forcing_features, batch_times) = batch
+        (init_states, target_states, forcing_features, batch_times, metadata) = batch
 
         prediction, pred_std = self.unroll_prediction(
             init_states, forcing_features, target_states
@@ -362,7 +367,7 @@ class ARModel(pl.LightningModule):
         # prediction: (B, pred_steps, num_grid_nodes, d_f) pred_std: (B,
         # pred_steps, num_grid_nodes, d_f) or (d_f,)
 
-        return prediction, target_states, pred_std, batch_times
+        return prediction, target_states, pred_std, batch_times, metadata
 
     def training_step(self, batch):
         """
@@ -380,7 +385,7 @@ class ARModel(pl.LightningModule):
             torch.cuda.synchronize()
         t0 = time.perf_counter()
 
-        prediction, target, pred_std, _ = self.common_step(batch)
+        prediction, target, pred_std, _, _ = self.common_step(batch)
 
         # Compute loss 
         batch_loss = torch.mean(
@@ -430,9 +435,9 @@ class ARModel(pl.LightningModule):
         """
         Run validation on single batch
         """
-        init_states, target_states, forcing_features, batch_times = batch
+        init_states, target_states, forcing_features, batch_times, metadata = batch
 
-        prediction, target, pred_std, batch_times = self.common_step(batch)
+        prediction, target, pred_std, batch_times, metadata = self.common_step(batch)
 
         pred_full = torch.cat(
             [
@@ -1085,9 +1090,17 @@ class ARModel(pl.LightningModule):
         Run test on single batch
         """
         # TODO Here batch_times can be used for plotting routines
-        prediction, target, pred_std, batch_times = self.common_step(batch)
+        prediction, target, pred_std, batch_times, metadata = self.common_step(batch)
         # prediction: (B, pred_steps, num_grid_nodes, d_f)
         # pred_std: (B, pred_steps, num_grid_nodes, d_f) or (d_f,)
+
+        self.test_metadata["ensemble_member"].append(
+            metadata["ensemble_member"].detach().cpu()
+        )
+
+        self.test_metadata["sample_idx"].append(
+            metadata["sample_idx"].detach().cpu()
+        )
 
         init_states = batch[0]
 
@@ -1257,7 +1270,7 @@ class ARModel(pl.LightningModule):
             Generate if None.
         """
         if prediction is None:
-            prediction, target, _, _ = self.common_step(batch)
+            prediction, target, _, _,_ = self.common_step(batch)
 
         target = batch[1]
         time = batch[3]
@@ -1762,6 +1775,22 @@ class ARModel(pl.LightningModule):
                     index=False,
                 )
 
+                ensemble_member = torch.cat(
+                    self.test_metadata["ensemble_member"], dim=0
+                ).numpy()
+
+                sample_idx = torch.cat(
+                    self.test_metadata["sample_idx"], dim=0
+                ).numpy()
+
+            pd.DataFrame({
+                "ensemble_member": ensemble_member,
+                "sample_idx": sample_idx,
+            }).to_csv(
+                os.path.join(save_dir, "test_metadata.csv"),
+                index=False,
+            )
+
 
         for metric_list in self.test_metrics.values():
             metric_list.clear()
@@ -1774,6 +1803,9 @@ class ARModel(pl.LightningModule):
 
         for metric_list in self.test_max_u_metrics.values():
             metric_list.clear()
+
+        for metadata_list in self.test_metadata.values():
+            metadata_list.clear()
 
     def _plot_prediction_snapshots(self, pred_np, target_np, time_np, steps_to_plot=None):
         """
