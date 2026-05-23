@@ -210,7 +210,7 @@ class WeatherDataset(torch.utils.data.Dataset):
         time_np_list = []
         grid_size_list = []
         forcing_da_list = []
-
+        
         for i_ens in range(n_ens):
             if self.datastore.is_ensemble:
                 da_state_ens = da_state.isel(ensemble_member=i_ens)
@@ -232,12 +232,21 @@ class WeatherDataset(torch.utils.data.Dataset):
         target_states_list = []
         target_times_list = []
         forcing_list = []
+        ensemble_member_list = []
+        sample_idx_list = []
 
         # IMPORTANT:
         # This ordering matches __getitem__:
         # sample_idx, i_ensemble = divmod(idx, n_ensemble_members)
         for sample_idx in range(0,raw_base_len,self.time_stride):
             for i_ens in range(n_ens):
+                if self.datastore.is_ensemble:
+                    ensemble_member_value = int(self.da_state.ensemble_member.values[i_ens])
+                else:
+                    ensemble_member_value = 0
+
+                ensemble_member_list.append(ensemble_member_value)
+                sample_idx_list.append(sample_idx)
                 state_np = state_np_list[i_ens]
                 time_np = time_np_list[i_ens]
                 grid_size = grid_size_list[i_ens]
@@ -282,6 +291,8 @@ class WeatherDataset(torch.utils.data.Dataset):
         self.target_states_np = np.stack(target_states_list).astype(np.float32)
         self.forcing_np = np.stack(forcing_list).astype(np.float32)
         self.target_times_np = np.asarray(target_times_list)
+        self.ensemble_member_np = np.asarray(ensemble_member_list, dtype=np.int64)
+        self.sample_idx_np = np.asarray(sample_idx_list, dtype=np.int64)
 
         logger.info(
             f"Precomputed arrays: "
@@ -616,12 +627,29 @@ class WeatherDataset(torch.utils.data.Dataset):
                 },
             )
 
+        if self.datastore.is_ensemble:
+            ensemble_member_value = int(self.da_state.ensemble_member.values[i_ensemble])
+        else:
+            ensemble_member_value = 0
+
+        metadata = {
+            "ensemble_member": ensemble_member_value,
+            "sample_idx": sample_idx,
+        }
+
         return (
             da_init_states,
             da_target_states,
             da_forcing_windowed,
             da_target_times,
+            metadata,
         )
+        # return (
+        #     da_init_states,
+        #     da_target_states,
+        #     da_forcing_windowed,
+        #     da_target_times,
+        # )
 
     def __getitem__(self, idx):
         """
@@ -668,13 +696,19 @@ class WeatherDataset(torch.utils.data.Dataset):
             else:
                 target_times = torch.tensor(times_np, dtype=torch.float64)
 
-            return init_states, target_states, forcing, target_times
+            metadata = {
+                "ensemble_member": torch.tensor(self.ensemble_member_np[idx], dtype=torch.long),
+                "sample_idx": torch.tensor(self.sample_idx_np[idx], dtype=torch.long),
+            }
 
+            return init_states, target_states, forcing, target_times, metadata
+        
         (
             da_init_states,
             da_target_states,
             da_forcing_windowed,
             da_target_times,
+            metadata,
         ) = self._build_item_dataarrays(idx=idx)
 
         tensor_dtype = torch.float32
@@ -702,7 +736,7 @@ class WeatherDataset(torch.utils.data.Dataset):
         # forcing: (ar_steps, N_grid, d_windowed_forcing)
         # target_times: (ar_steps,)
 
-        return init_states, target_states, forcing, target_times
+        return init_states, target_states, forcing, target_times, metadata
 
     def __iter__(self):
         """
