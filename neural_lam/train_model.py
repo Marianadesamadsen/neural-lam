@@ -287,6 +287,13 @@ def main(input_args=None):
         help="Stride in val data, more training effeciency"
     )
 
+    parser.add_argument(
+        "--test_time_stride",
+        type = int,
+        default= 1,
+        help="Stride in test data, more training effeciency"
+    )
+
     args = parser.parse_args(input_args)
     args.var_leads_metrics_watch = {
         int(k): v for k, v in json.loads(args.var_leads_metrics_watch).items()
@@ -341,7 +348,7 @@ def main(input_args=None):
         precompute_in_memory=args.precompute_in_memory,
         val_time_stride=args.val_time_stride,
         train_time_stride=1,
-        test_time_stride=1
+        test_time_stride=args.test_time_stride
     )
 
     # Instantiate model + trainer
