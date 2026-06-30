@@ -459,7 +459,7 @@ class ARModel(pl.LightningModule):
         target_phys_batch = target_full * self.state_std[0] + self.state_mean[0]
 
         energy_out = self.get_energy_out_torch()
-        dt = self.time_step_int
+        dt = self.time_step_int * self.args.val_time_jump
         ut_order = 4
 
         E_pred_batch = compute_energy_over_time_torch(
@@ -534,15 +534,6 @@ class ARModel(pl.LightningModule):
             sum_vars=False,
         )  # (B, pred_steps, d_f)
         self.val_metrics["mse"].append(entry_mses)
-
-        should_store_old = (
-            self.trainer.is_global_zero
-            and batch_idx == 0
-            and (
-                self.current_epoch % self._val_vis_every_n_epochs == 0
-                or self.current_epoch == 0
-            )
-        )
 
         should_store = (
             self.trainer.is_global_zero
@@ -782,7 +773,7 @@ class ARModel(pl.LightningModule):
         axs[1].fill_between(steps, E_abs_mean - E_abs_std, E_abs_mean + E_abs_std, alpha=0.3)
         axs[1].set_title("Mean absolute energy error ± std")
         axs[1].set_ylabel(r"|$\hat{u}_t-u_t|$")
-        axs[1].set_yscale("log")  # important
+        #axs[1].set_yscale("log")  # important
         axs[1].grid(True)
 
         # --- Relative error ---
@@ -791,80 +782,11 @@ class ARModel(pl.LightningModule):
         axs[2].set_title("Mean relative energy error ± std")
         axs[2].set_xlabel("Rollout step")
         axs[2].set_ylabel(r"$\frac{|\hat{u}_t-u_t|}{|u_t|}$")
-        axs[2].set_yscale("log")  # important
+        #axs[2].set_yscale("log")  # important
         axs[2].grid(True)
 
         fig.tight_layout()
         return fig
-    
-    def plot_eigenvalues(self, eigvals):
-        fig, ax = plt.subplots(figsize=(6, 6))
-
-        ax.scatter(eigvals.real, eigvals.imag, s=10)
-
-        theta = np.linspace(0, 2 * np.pi, 500)
-        ax.plot(np.cos(theta), np.sin(theta), linestyle="--")
-
-        ax.set_xlabel("Re(lambda)")
-        ax.set_ylabel("Im(lambda)")
-        ax.set_title("Eigenvalues of learned AR operator")
-        ax.set_aspect("equal")
-        ax.grid(True)
-
-        return fig
-    
-    def compute_ar_jacobian_eigenvalues(self, init_states, forcing=None):
-        """
-        Compute eigenvalues of the local AR companion operator:
-
-            [x_t, x_{t+1}] = Psi([x_{t-1}, x_t])
-        """
-
-        self.eval()
-        device = next(self.parameters()).device
-
-        init_states = init_states.to(device)
-
-        if forcing is not None:
-            forcing = forcing.to(device)
-
-        x0 = init_states.clone().detach().requires_grad_(True)
-
-        def ar_map_flat(x_flat):
-            x = x_flat.reshape_as(x0)
-
-            prev_prev_state = x[0].unsqueeze(0)  # (1, N, F)
-            prev_state = x[1].unsqueeze(0)       # (1, N, F)
-
-            if forcing is None:
-                raise ValueError("forcing is required for this model")
-
-            forcing_step = forcing.unsqueeze(0)  # (1, N, F_forcing)
-
-            pred_next, _ = self.predict_step(
-                prev_state=prev_state,
-                prev_prev_state=prev_prev_state,
-                forcing=forcing_step,
-            )
-
-            pred_next = pred_next.squeeze(0)
-            
-            new_state = torch.stack([x[1], pred_next], dim=0)
-
-            return new_state.reshape(-1)
-
-        x_flat = x0.reshape(-1)
-
-        J = torch.autograd.functional.jacobian(
-            ar_map_flat,
-            x_flat,
-            vectorize=True,
-        )
-
-        J_np = J.detach().cpu().numpy()
-        eigvals = np.linalg.eigvals(J_np)
-
-        return eigvals, J_np
     
     def on_validation_epoch_end(self):
 
@@ -1124,7 +1046,9 @@ class ARModel(pl.LightningModule):
         target_phys_batch = target_full * self.state_std[0] + self.state_mean[0]
 
         energy_out = self.get_energy_out_torch()
-        dt = self.time_step_int
+        time_jump = self.trainer.datamodule.test_dataset.time_jump
+        dt = self.time_step_int * time_jump
+        print("dt new",dt)
         ut_order = 4
 
         E_pred_batch = compute_energy_over_time_torch(
@@ -1145,7 +1069,12 @@ class ARModel(pl.LightningModule):
 
         eps = 1e-12
         E_abs_error_batch = torch.abs(E_pred_batch - E_target_batch)
-        E_rel_error_batch = E_abs_error_batch / (torch.abs(E_target_batch) + eps)
+
+        E_rel_error_batch = torch.where(
+            torch.abs(E_target_batch) > eps,
+            E_abs_error_batch / torch.abs(E_target_batch),
+            torch.full_like(E_abs_error_batch, torch.nan),
+        )
 
         self.test_energy_metrics["pred"].append(E_pred_batch.detach())
         self.test_energy_metrics["target"].append(E_target_batch.detach())
@@ -1205,17 +1134,40 @@ class ARModel(pl.LightningModule):
             mask=self.interior_mask_bool,
             sum_vars=True,
         )  # (B, rollout_steps)
+
         prediction_phys = prediction * self.state_std + self.state_mean
         target_phys = target * self.state_std + self.state_mean
 
         pred_max_u = torch.amax(torch.abs(prediction_phys[..., 0]), dim=2)    # (B, rollout_steps)
         target_max_u = torch.amax(torch.abs(target_phys[..., 0]), dim=2)      # (B, rollout_steps)
 
+        ###
+        zero_rmse = torch.sqrt(torch.mean(prediction_phys[..., 0] ** 2, dim=2))
+        zero_mae = torch.mean(torch.abs(prediction_phys[..., 0]), dim=2)
+        zero_max = torch.amax(torch.abs(prediction_phys[..., 0]), dim=2)
+
+        if not hasattr(self, "test_zero_metrics"):
+            self.test_zero_metrics = {
+                "rmse": [],
+                "mae": [],
+                "max": [],
+            }
+
+        self.test_zero_metrics["rmse"].append(zero_rmse.detach())
+        self.test_zero_metrics["mae"].append(zero_mae.detach())
+        self.test_zero_metrics["max"].append(zero_max.detach())
+
+
         max_u_abs_error = torch.abs(target_max_u - pred_max_u)
 
         eps = 1e-12
-        max_u_rel_error = max_u_abs_error / (torch.abs(target_max_u) + eps)
+        max_u_rel_error = torch.where(
+            torch.abs(target_max_u) > eps,
+            max_u_abs_error / torch.abs(target_max_u),
+            torch.full_like(max_u_abs_error, torch.nan),
+        )
 
+        ##
         self.test_max_u_metrics["pred_max"].append(pred_max_u.detach())
         self.test_max_u_metrics["target_max"].append(target_max_u.detach())
         self.test_max_u_metrics["abs_error"].append(max_u_abs_error.detach())
@@ -1241,7 +1193,7 @@ class ARModel(pl.LightningModule):
         self.spatial_loss_maps.append(log_spatial_losses)
         # (B, N_log, num_grid_nodes)
 
-        max_saved_batches = 5
+        max_saved_batches = 20
         if (
             self.args.save_eval_to_zarr_path
             and batch_idx < max_saved_batches
@@ -1706,6 +1658,26 @@ class ARModel(pl.LightningModule):
 
             columns = [f"rollout_{i+1}" for i in range(mse.shape[1])]
 
+            if hasattr(self, "test_zero_metrics") and len(self.test_zero_metrics["rmse"]) > 0:
+                zero_rmse = torch.cat(self.test_zero_metrics["rmse"], dim=0).cpu().numpy()
+                zero_mae = torch.cat(self.test_zero_metrics["mae"], dim=0).cpu().numpy()
+                zero_max = torch.cat(self.test_zero_metrics["max"], dim=0).cpu().numpy()
+
+                pd.DataFrame(zero_rmse, columns=columns).to_csv(
+                    os.path.join(save_dir, "test_zero_rmse_per_sample.csv"),
+                    index=False,
+                )
+
+                pd.DataFrame(zero_mae, columns=columns).to_csv(
+                    os.path.join(save_dir, "test_zero_mae_per_sample.csv"),
+                    index=False,
+                )
+
+                pd.DataFrame(zero_max, columns=columns).to_csv(
+                    os.path.join(save_dir, "test_zero_max_per_sample.csv"),
+                    index=False,
+                )
+
             pd.DataFrame(mse, columns=columns).to_csv(
                 os.path.join(save_dir, "test_mse_per_sample.csv"),
                 index=False,
@@ -1806,6 +1778,10 @@ class ARModel(pl.LightningModule):
 
         for metadata_list in self.test_metadata.values():
             metadata_list.clear()
+
+        if hasattr(self, "test_zero_metrics"):
+            for metric_list in self.test_zero_metrics.values():
+                metric_list.clear()
 
     def _plot_prediction_snapshots(self, pred_np, target_np, time_np, steps_to_plot=None):
         """

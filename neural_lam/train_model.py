@@ -136,6 +136,27 @@ def main(input_args=None):
         "output dimensions",
     )
 
+    parser.add_argument(
+        "--train_time_jump",
+        type=int,
+        default=1,
+        help="Temporal jump between states in training samples",
+    )
+
+    parser.add_argument(
+        "--val_time_jump",
+        type=int,
+        default=1,
+        help="Temporal jump between states in training samples",
+    )
+
+    parser.add_argument(
+        "--test_time_jump",
+        type=int,
+        default=1,
+        help="Temporal jump between states in training samples",
+    )
+    
     # Training options
     parser.add_argument(
         "--ar_steps_train",
@@ -348,7 +369,10 @@ def main(input_args=None):
         precompute_in_memory=args.precompute_in_memory,
         val_time_stride=args.val_time_stride,
         train_time_stride=1,
-        test_time_stride=args.test_time_stride
+        test_time_stride=args.test_time_stride,
+        test_time_jump=args.test_time_jump,
+        train_time_jump=args.train_time_jump,
+        val_time_jump=args.val_time_jump
     )
 
     # Instantiate model + trainer
@@ -402,6 +426,15 @@ def main(input_args=None):
         save_top_k=1,
         save_last=True,
         )
+    
+    checkpoint_1step_callback = pl.callbacks.ModelCheckpoint(
+        dirpath=f"saved_models/{run_name}",
+        filename="val_loss_unroll1-{epoch:03d}-{val_loss_unroll1:.6f}",
+        monitor="val_loss_unroll1",
+        mode="min",
+        save_top_k=1,
+        save_last=False,
+    )
 
     checkpoint_step_callback = pl.callbacks.ModelCheckpoint(
             dirpath=f"saved_models/{run_name}",
@@ -429,11 +462,11 @@ def main(input_args=None):
         devices=devices,
         logger=training_logger,
         log_every_n_steps=1,
-        callbacks=[checkpoint_best_callback, checkpoint_step_callback], # Obs no early_stopping_callback
+        callbacks=[checkpoint_best_callback, checkpoint_step_callback, checkpoint_1step_callback], # Obs no early_stopping_callback
         check_val_every_n_epoch=args.val_interval,
         precision=args.precision,
     )
-
+ 
     # Only init once, on rank 0 only
     if trainer.global_rank == 0:
         utils.init_training_logger_metrics(
@@ -447,7 +480,7 @@ def main(input_args=None):
             weights_only=False,
         )
     else:
-        trainer.fit(model=model, datamodule=data_module, ckpt_path=args.load)
+        trainer.fit(model=model, datamodule=data_module, ckpt_path=args.load,weights_only=False)
 
 
 if __name__ == "__main__":
