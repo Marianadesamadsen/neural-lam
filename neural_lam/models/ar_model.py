@@ -541,7 +541,7 @@ class ARModel(pl.LightningModule):
         )
 
         if should_store and self._val_vis_prediction is None:
-            sample_idx = 0  # safer than 2 unless you know batch size >= 3
+            sample_idx = 0 
 
             self._val_vis_prediction = prediction[sample_idx, :, :, 0].detach().cpu().numpy()
             self._val_vis_target = target[sample_idx, :, :, 0].detach().cpu().numpy()
@@ -564,33 +564,6 @@ class ARModel(pl.LightningModule):
 
         return self.energy_out_torch
 
-    def plot_energy_error_map(self, energy_tensor, title, cbar_label):
-        """
-        energy_tensor shape: (num_val_trajectories, rollout_steps)
-        """
-
-        energy_np = energy_tensor.detach().cpu().numpy()
-
-        fig, ax = plt.subplots(figsize=(8, 5))
-
-        im = ax.imshow(
-            energy_np,
-            aspect="auto",
-            interpolation="nearest",
-        )
-
-        ax.set_xlabel("Rollout step")
-        ax.set_ylabel("Validation sample index")
-        ax.set_title(title)
-
-        n_steps = energy_np.shape[1]
-        ax.set_xticks(np.arange(n_steps))
-        ax.set_xticklabels(np.arange(1 , n_steps + 1))
-
-        fig.colorbar(im, ax=ax, label=cbar_label)
-        fig.tight_layout()
-
-        return fig
     
     def aggregate_and_plot_energy_metrics(self):
         """
@@ -647,7 +620,7 @@ class ARModel(pl.LightningModule):
         val_mean_pred_energy_drift = torch.mean(pred_energy_drift)
         val_mean_target_energy_drift = torch.mean(target_energy_drift)
 
-        # Energy ratio error: how far E_pred / E_target is from 1
+        # Energy ratio error
         energy_ratio_error = torch.abs(
             energy_pred / (energy_target + eps) - 1.0
         )
@@ -679,39 +652,6 @@ class ARModel(pl.LightningModule):
             on_epoch=True,
             sync_dist=True,
         )
-
-        # Log heatmaps
-        figs = {
-            "val_energy_target": self.plot_energy_error_map(
-                energy_target,
-                title="Validation target energy",
-                cbar_label="Energy",
-            ),
-            "val_energy_pred": self.plot_energy_error_map(
-                energy_pred,
-                title="Validation predicted energy",
-                cbar_label="Energy",
-            ),
-            "val_energy_abs_error": self.plot_energy_error_map(
-                energy_abs_error,
-                title="Validation absolute energy error",
-                cbar_label="|Energy error|",
-            ),
-            "val_energy_rel_error": self.plot_energy_error_map(
-                energy_rel_error,
-                title="Validation relative energy error",
-                cbar_label="Relative energy error",
-            ),
-        }
-
-        for key, fig in figs.items():
-            if hasattr(self.logger, "log_image"):
-                self.logger.log_image(
-                    key=key,
-                    images=[fig],
-                    step=self.current_epoch,
-                )  
-
         
         plt.close("all")
 
@@ -738,9 +678,6 @@ class ARModel(pl.LightningModule):
         energy_abs_error,
         energy_rel_error,
     ):
-        """
-        Mean ± std over validation trajectories
-        """
 
         def mean_std(x):
             mean = torch.mean(x, dim=0).cpu().numpy()
@@ -756,19 +693,19 @@ class ARModel(pl.LightningModule):
 
         fig, axs = plt.subplots(3, 1, figsize=(8, 10))
 
-        # --- Energy ---
+        # 
         axs[0].plot(steps, E_t_mean, label="Target")
         axs[0].fill_between(steps, E_t_mean - E_t_std, E_t_mean + E_t_std, alpha=0.3)
 
         axs[0].plot(steps, E_p_mean, label="Predicted")
         axs[0].fill_between(steps, E_p_mean - E_p_std, E_p_mean + E_p_std, alpha=0.3)
 
-        axs[0].set_title("Mean energy ± std")
+        axs[0].set_title("Mean energy +- std")
         axs[0].set_ylabel("Energy")
         axs[0].legend()
         axs[0].grid(True)
 
-        # --- Absolute error ---
+        #Absolute error
         axs[1].plot(steps, E_abs_mean)
         axs[1].fill_between(steps, E_abs_mean - E_abs_std, E_abs_mean + E_abs_std, alpha=0.3)
         axs[1].set_title("Mean absolute energy error ± std")
@@ -776,7 +713,7 @@ class ARModel(pl.LightningModule):
         #axs[1].set_yscale("log")  # important
         axs[1].grid(True)
 
-        # --- Relative error ---
+        # Relative error 
         axs[2].plot(steps, E_rel_mean)
         axs[2].fill_between(steps, E_rel_mean - E_rel_std, E_rel_mean + E_rel_std, alpha=0.3)
         axs[2].set_title("Mean relative energy error ± std")
@@ -806,7 +743,6 @@ class ARModel(pl.LightningModule):
 
         # Create error maps for validation metrics
         self.aggregate_and_plot_metrics(self.val_metrics, prefix="val")
-        #if is_plot_epoch:
         self.aggregate_and_plot_energy_metrics()
 
         # Prediction snapshots: only every N epochs
@@ -1141,23 +1077,6 @@ class ARModel(pl.LightningModule):
         pred_max_u = torch.amax(torch.abs(prediction_phys[..., 0]), dim=2)    # (B, rollout_steps)
         target_max_u = torch.amax(torch.abs(target_phys[..., 0]), dim=2)      # (B, rollout_steps)
 
-        ###
-        zero_rmse = torch.sqrt(torch.mean(prediction_phys[..., 0] ** 2, dim=2))
-        zero_mae = torch.mean(torch.abs(prediction_phys[..., 0]), dim=2)
-        zero_max = torch.amax(torch.abs(prediction_phys[..., 0]), dim=2)
-
-        if not hasattr(self, "test_zero_metrics"):
-            self.test_zero_metrics = {
-                "rmse": [],
-                "mae": [],
-                "max": [],
-            }
-
-        self.test_zero_metrics["rmse"].append(zero_rmse.detach())
-        self.test_zero_metrics["mae"].append(zero_mae.detach())
-        self.test_zero_metrics["max"].append(zero_max.detach())
-
-
         max_u_abs_error = torch.abs(target_max_u - pred_max_u)
 
         eps = 1e-12
@@ -1210,179 +1129,6 @@ class ARModel(pl.LightningModule):
                     batch_idx=batch_idx,
                     zarr_output_path=self.args.save_eval_to_zarr_path,
                 )
-
-
-    def plot_examples(self, batch, n_examples, split, prediction=None):
-        """
-        Plot the first n_examples forecasts from batch
-
-        batch: batch with data to plot corresponding forecasts for n_examples:
-        number of forecasts to plot prediction: (B, pred_steps, num_grid_nodes,
-        d_f), existing prediction.
-            Generate if None.
-        """
-        if prediction is None:
-            prediction, target, _, _,_ = self.common_step(batch)
-
-        target = batch[1]
-        time = batch[3]
-
-        # Rescale to original data scale
-        prediction_rescaled = prediction * self.state_std + self.state_mean
-        target_rescaled = target * self.state_std + self.state_mean
-
-        # Iterate over the examples
-        for pred_slice, target_slice, time_slice in zip(
-            prediction_rescaled[:n_examples],
-            target_rescaled[:n_examples],
-            time[:n_examples],
-        ):
-            # Each slice is (pred_steps, num_grid_nodes, d_f)
-            self.plotted_examples += 1  # Increment already here
-
-            da_prediction = self._create_dataarray_from_tensor(
-                tensor=pred_slice,
-                time=time_slice,
-                split=split,
-                category="state",
-            ).unstack("grid_index")
-            da_target = self._create_dataarray_from_tensor(
-                tensor=target_slice,
-                time=time_slice,
-                split=split,
-                category="state",
-            ).unstack("grid_index")
-
-            var_vmin = (
-                torch.minimum(
-                    pred_slice.flatten(0, 1).min(dim=0)[0],
-                    target_slice.flatten(0, 1).min(dim=0)[0],
-                )
-                .cpu()
-                .numpy()
-            )  # (d_f,)
-            var_vmax = (
-                torch.maximum(
-                    pred_slice.flatten(0, 1).max(dim=0)[0],
-                    target_slice.flatten(0, 1).max(dim=0)[0],
-                )
-                .cpu()
-                .numpy()
-            )  # (d_f,)
-            var_vranges = list(zip(var_vmin, var_vmax))
-
-            example_i = self.plotted_examples
-
-            if self.args.create_gif:
-                plot_dir_path = os.path.join(
-                    self.logger.save_dir,
-                    f"example_plots_{example_i}",
-                )
-                os.makedirs(plot_dir_path, exist_ok=True)
-                png_frames: Dict[str, List[str]] = {
-                    var_name: []
-                    for var_name in self._datastore.get_vars_names("state")
-                }
-
-            # Iterate over prediction horizon time steps
-            for t_i, _ in enumerate(zip(pred_slice, target_slice), start=1):
-                # Create one figure per variable at this time step
-                var_figs = [
-                    vis.plot_prediction(
-                        datastore=self._datastore,
-                        title=f"{var_name}, t={t_i}"
-                        f" ({self.time_step_int * t_i}"
-                        f"{self.time_step_unit})",
-                        colorbar_label=var_unit,
-                        vrange=var_vrange,
-                        da_prediction=da_prediction.isel(
-                            state_feature=var_i, time=t_i - 1
-                        ).squeeze(),
-                        da_target=da_target.isel(
-                            state_feature=var_i, time=t_i - 1
-                        ).squeeze(),
-                    )
-                    for var_i, (var_name, var_unit, var_vrange) in enumerate(
-                        zip(
-                            self._datastore.get_vars_names("state"),
-                            self._datastore.get_vars_units("state"),
-                            var_vranges,
-                        )
-                    )
-                ]
-
-                for var_name, fig in zip(
-                    self._datastore.get_vars_names("state"), var_figs
-                ):
-
-                    # We need treat logging images differently for different
-                    # loggers. WANDB can log multiple images to the same key,
-                    # while other loggers, as MLFlow, need unique keys for
-                    # each image.
-                    if isinstance(self.logger, pl.loggers.WandbLogger):
-                        key = f"{var_name}_example_{example_i}"
-                    else:
-                        key = f"{var_name}_example"
-
-                    if hasattr(self.logger, "log_image"):
-                        self.logger.log_image(key=key, images=[fig], step=t_i)
-                    else:
-                        warnings.warn(
-                            f"{self.logger} does not support image logging."
-                        )
-
-                    # Save PNG frame for GIF animation
-                    if self.args.create_gif:
-                        png_path = os.path.join(
-                            plot_dir_path,
-                            f"{var_name}_example_{example_i}"
-                            f"_prediction_t_{t_i:02d}.png",
-                        )
-                        fig.savefig(png_path, dpi=100, bbox_inches="tight")
-                        png_frames[var_name].append(png_path)
-
-                plt.close(
-                    "all"
-                )  # Close all figs for this time step, saves memory
-
-            # Generate GIF animations from the saved PNG frames,
-            # one GIF per variable combining all prediction time steps
-            if self.args.create_gif:
-                for var_name, frames_for_var in png_frames.items():
-                    if frames_for_var:
-                        gif_path = os.path.join(
-                            plot_dir_path,
-                            f"{var_name}_example_{example_i}_prediction.gif",
-                        )
-                        frames = [Image.open(f) for f in frames_for_var]
-
-                        try:
-                            frames[0].save(
-                                gif_path,
-                                save_all=True,
-                                append_images=frames[1:],
-                                loop=0,
-                                duration=1000,
-                            )
-                        finally:
-                            for frame in frames:
-                                frame.close()
-
-            # Save pred and target as .pt files
-            torch.save(
-                pred_slice.cpu(),
-                os.path.join(
-                    self.logger.save_dir,
-                    f"example_pred_{self.plotted_examples}.pt",
-                ),
-            )
-            torch.save(
-                target_slice.cpu(),
-                os.path.join(
-                    self.logger.save_dir,
-                    f"example_target_{self.plotted_examples}.pt",
-                ),
-            )
 
     def create_metric_log_dict(self, metric_tensor, prefix, metric_name):
         """
@@ -1537,35 +1283,6 @@ class ARModel(pl.LightningModule):
             on_epoch=True,
             sync_dist=True,
         )
-
-        figs = {
-            "test_energy_target": self.plot_energy_error_map(
-                energy_target,
-                title="Test target energy",
-                cbar_label="Energy",
-            ),
-            "test_energy_pred": self.plot_energy_error_map(
-                energy_pred,
-                title="Test predicted energy",
-                cbar_label="Energy",
-            ),
-            "test_energy_abs_error": self.plot_energy_error_map(
-                energy_abs_error,
-                title="Test absolute energy error",
-                cbar_label="|Energy error|",
-            ),
-            "test_energy_rel_error": self.plot_energy_error_map(
-                energy_rel_error,
-                title="Test relative energy error",
-                cbar_label="Relative energy error",
-            ),
-        }
-
-        for key, fig in figs.items():
-            if hasattr(self.logger, "log_image"):
-                self.logger.log_image(key=key, images=[fig])
-
-        plt.close("all")
 
         fig_mean_std = self.plot_mean_energy_with_std(
             energy_target,
@@ -1811,7 +1528,6 @@ class ARModel(pl.LightningModule):
         tri = ds_src["tri"].values
         R = float(ds_src.attrs["R"])
 
-        # Make sure P is (N, 3)
         if P.shape[0] == 3 and P.shape[1] != 3:
             P_plot = P.T
         else:
